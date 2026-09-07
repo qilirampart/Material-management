@@ -3,7 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from src.upload import build_upload_plan, eligible_materials, suggested_drama_name
+from src.upload import build_upload_plan, eligible_materials, stage_upload_batch, suggested_drama_name
 
 
 class UploadPreparationTests(unittest.TestCase):
@@ -66,6 +66,28 @@ class UploadPreparationTests(unittest.TestCase):
     def test_plan_requires_dynamic_upload_information(self):
         with self.assertRaisesRegex(ValueError, "建议短剧"):
             build_upload_plan([], drama_name="", drama_platform_id="", director="", uploader_initials="")
+
+    def test_staging_keeps_source_and_creates_named_upload_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"video-content")
+            batch = {
+                "index": 1,
+                "items": [{
+                    "video_id": "123",
+                    "original_path": str(source),
+                    "upload_name": "APP-繁花-王俨-改md5-情报台-测试-ZYY-260907-01.mp4",
+                }],
+            }
+
+            staged = stage_upload_batch(batch, root / "upload-staging")
+
+            staged_path = Path(staged["items"][0]["upload_path"])
+            self.assertTrue(source.is_file())
+            self.assertTrue(staged_path.is_file())
+            self.assertEqual(staged_path.read_bytes(), b"video-content")
+            self.assertEqual(staged_path.name, batch["items"][0]["upload_name"])
 
 
 if __name__ == "__main__":

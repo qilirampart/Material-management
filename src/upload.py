@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import os
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -85,3 +87,24 @@ def build_upload_plan(
         {"index": index // batch_limit + 1, "items": items[index:index + batch_limit]}
         for index in range(0, len(items), batch_limit)
     ]
+
+
+def stage_upload_batch(batch, staging_root):
+    target_folder = Path(staging_root) / f"batch-{int(batch['index']):02d}"
+    target_folder.mkdir(parents=True, exist_ok=True)
+    staged_items = []
+    for item in batch.get("items", []):
+        source = Path(item["original_path"])
+        if not source.is_file():
+            raise FileNotFoundError(f"待上传视频不存在：{source}")
+        target = target_folder / item["upload_name"]
+        if target.exists():
+            if target.stat().st_size != source.stat().st_size:
+                raise FileExistsError(f"上传暂存文件已存在且内容不一致：{target}")
+        else:
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copy2(source, target)
+        staged_items.append({**item, "upload_path": str(target)})
+    return {**batch, "items": staged_items, "folder": str(target_folder)}
