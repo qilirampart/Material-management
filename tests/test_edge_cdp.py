@@ -1,0 +1,52 @@
+import json
+import unittest
+from unittest.mock import MagicMock, patch
+
+from src.edge_cdp import edge_target_ids, fit_new_edge_page
+
+
+class EdgeCdpTests(unittest.TestCase):
+    @patch("src.edge_cdp.edge_targets", return_value=[{"id": "old"}, {"id": "new"}])
+    def test_target_snapshot_contains_ids(self, _targets):
+        self.assertEqual(edge_target_ids(), {"old", "new"})
+
+    @patch("src.edge_cdp.websocket.create_connection")
+    @patch("src.edge_cdp.edge_targets")
+    def test_fits_only_the_new_platform_page(self, targets, connect):
+        targets.return_value = [
+            {"id": "old", "type": "page", "url": "https://market.wuread.cn/market-admin/", "webSocketDebuggerUrl": "ws://old"},
+            {"id": "new", "type": "page", "url": "https://market.wuread.cn/market-admin/", "webSocketDebuggerUrl": "ws://new"},
+        ]
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({"id": 1, "result": {}})
+        connect.return_value = socket
+
+        result = fit_new_edge_page({"old"}, "https://market.wuread.cn/market-admin/")
+
+        self.assertEqual(result, "ws://new")
+        payload = json.loads(socket.send.call_args.args[0])
+        self.assertEqual(payload["method"], "Runtime.evaluate")
+        self.assertIn("0.67", payload["params"]["expression"])
+        socket.close.assert_called_once()
+
+    @patch("src.edge_cdp.time.sleep")
+    @patch("src.edge_cdp.websocket.create_connection")
+    @patch("src.edge_cdp.edge_targets")
+    def test_retries_while_debug_port_starts(self, targets, connect, sleep):
+        targets.side_effect = [OSError("not ready"), [{
+            "id": "new",
+            "type": "page",
+            "url": "https://market.wuread.cn/market-admin/",
+            "webSocketDebuggerUrl": "ws://new",
+        }]]
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({"id": 1, "result": {}})
+        connect.return_value = socket
+
+        fit_new_edge_page(set(), "https://market.wuread.cn/market-admin/")
+
+        sleep.assert_called_once_with(0.25)
+
+
+if __name__ == "__main__":
+    unittest.main()

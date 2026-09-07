@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QPixmap, QWindow
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -14,7 +14,12 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
-from src.edge_session import open_persistent_edge
+from src.edge_cdp import edge_target_ids, fit_new_edge_page
+from src.edge_session import (
+    find_embeddable_edge_window,
+    launch_embedded_edge,
+    prepare_edge_window_for_embedding,
+)
 from src.platform_bridge import build_upload_form_script
 from src.upload import (
     build_upload_plan,
@@ -84,6 +89,24 @@ class AspectRatioContainer(QWidget):
         x = (self.width() - width) // 2
         y = (self.height() - height) // 2
         self.child.setGeometry(x, y, width, height)
+
+
+class NativeWindowViewport(QWidget):
+    def __init__(self, window, parent=None, left=8, top=38, right=8, bottom=8):
+        super().__init__(parent)
+        self.insets = (left, top, right, bottom)
+        self.container = QWidget.createWindowContainer(window, self)
+        self.container.setFocusPolicy(Qt.StrongFocus)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        left, top, right, bottom = self.insets
+        self.container.setGeometry(
+            -left,
+            -top,
+            self.width() + left + right,
+            self.height() + top + bottom,
+        )
 
 
 class SettingsPage(QWidget):
@@ -413,6 +436,15 @@ class PlatformPage(QWidget):
         self.batch_folder = None
         self.upload_batches = []
         self.staging_task = None
+        self.edge_profile = None
+        self.edge_previous_windows = set()
+        self.edge_attach_attempt = 0
+        self.edge_foreign_window = None
+        self.edge_container = None
+        self.edge_window_handle = None
+        self.edge_previous_targets = set()
+        self.edge_target_ws_url = None
+        self.edge_zoom_task = None
         self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         self.upload_config_dialog = UploadConfigDialog(self.upload_preferences['uploader_initials'], self)
@@ -436,8 +468,9 @@ class PlatformPage(QWidget):
         self.address.setPlaceholderText('请输入公司平台地址')
         self.address.returnPressed.connect(self.open_platform)
         row.addWidget(self.address, 1)
-        row.addWidget(button('复用 Edge 登录', self.open_edge_session))
-        row.addWidget(button('打开平台', self.open_platform, True))
+        self.edge_button = button('打开已登录 Edge', self.open_edge_session, True)
+        row.addWidget(self.edge_button)
+        row.addWidget(button('新建登录', self.open_platform))
         box.addLayout(row)
         self.area = QVBoxLayout()
         self.empty = QLabel('▣\n\n打开公司素材平台\n\n首次使用请填写平台地址，打开后由您自行登录。\n\n登录状态保存在本机，平台要求重新验证时请再次登录。')
@@ -481,12 +514,77 @@ class PlatformPage(QWidget):
         layout.addLayout(body, 1)
 
     def open_edge_session(self):
+        if self.edge_container is not None:
+            self.edge_container.setFocus()
+            return
         try:
-            profile = open_persistent_edge(self.address.text(), self.config)
+            port = int(self.config.get('edge_debug_port', 9222))
+            try:
+                self.edge_previous_targets = edge_target_ids(port)
+            except OSError:
+                self.edge_previous_targets = set()
+            self.edge_profile, self.edge_previous_windows = launch_embedded_edge(
+                self.address.text(), self.config
+            )
         except (OSError, ValueError) as exc:
             QMessageBox.information(self, '无法打开 Edge', str(exc))
             return
-        self.status.setText(f'已打开专用 Edge · 登录状态保存在 {profile}')
+        self.edge_attach_attempt = 0
+        self.status.setText('正在启动并嵌入已登录 Edge…')
+        QTimer.singleShot(250, self._attach_edge_session)
+
+    def _attach_edge_session(self):
+        handle = find_embeddable_edge_window(self.edge_previous_windows)
+        if handle:
+            self.edge_foreign_window = QWindow.fromWinId(handle)
+            if self.edge_foreign_window:
+                self.edge_window_handle = handle
+                self.edge_container = NativeWindowViewport(self.edge_foreign_window, self)
+                self.edge_container.setFocusPolicy(Qt.StrongFocus)
+                self.browser_stage.set_widget(self.edge_container)
+                prepare_edge_window_for_embedding(handle)
+                QTimer.singleShot(100, lambda: prepare_edge_window_for_embedding(handle))
+                self.status.setText('已嵌入专用 Edge · 正在适配页面尺寸…')
+                QTimer.singleShot(1200, self._fit_edge_session)
+                self.edge_button.setEnabled(False)
+                return
+        self.edge_attach_attempt += 1
+        if self.edge_attach_attempt < 40:
+            QTimer.singleShot(250, self._attach_edge_session)
+        else:
+            self.status.setText('Edge 已启动，但未找到可嵌入窗口，请重试。')
+
+    def _fit_edge_session(self):
+        port = int(self.config.get('edge_debug_port', 9222))
+        self.edge_zoom_task = Background(
+            lambda: fit_new_edge_page(
+                self.edge_previous_targets,
+                self.address.text().strip(),
+                port,
+                0.67,
+            ),
+            self,
+        )
+        self.edge_zoom_task.result.connect(self._edge_session_ready)
+        self.edge_zoom_task.failed.connect(self._edge_session_fit_failed)
+        self.edge_zoom_task.start()
+
+    def _edge_session_ready(self, ws_url):
+        self.edge_target_ws_url = ws_url
+        if self.edge_window_handle:
+            prepare_edge_window_for_embedding(self.edge_window_handle)
+            QTimer.singleShot(
+                100,
+                lambda: prepare_edge_window_for_embedding(self.edge_window_handle),
+            )
+            QTimer.singleShot(
+                500,
+                lambda: prepare_edge_window_for_embedding(self.edge_window_handle),
+            )
+        self.status.setText(f'已嵌入专用 Edge · 登录状态保存在 {self.edge_profile}')
+
+    def _edge_session_fit_failed(self, message):
+        self.status.setText(f'Edge 已嵌入 · 页面尺寸自动适配失败：{message}')
 
     def set_materials(self, rows, records, notes, selected_ids, batch_folder):
         self.materials = eligible_materials(rows, records, notes, selected_ids)

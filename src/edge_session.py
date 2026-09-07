@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import ctypes
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -28,23 +29,23 @@ def find_edge() -> Path:
     raise FileNotFoundError("未找到 Microsoft Edge，请确认 Edge 已安装。")
 
 
-def build_edge_command(url: str, profile: Path, port: int = 9222) -> list[str]:
+def build_edge_command(url: str, profile: Path, port: int = 9222, *, app_mode: bool = False) -> list[str]:
     parsed = urlsplit(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("平台地址无效，请填写 http 或 https 地址。")
-    return [
+    command = [
         str(find_edge()),
         f"--remote-debugging-port={int(port)}",
         f"--user-data-dir={profile.resolve()}",
-        "--new-window",
-        url.strip(),
     ]
+    if app_mode:
+        command.append(f"--app={url.strip()}")
+    else:
+        command.extend(("--new-window", url.strip()))
+    return command
 
 
-def open_persistent_edge(url: str, config: dict) -> Path:
-    profile = persistent_edge_profile(config)
-    profile.mkdir(parents=True, exist_ok=True)
-    command = build_edge_command(url, profile, int(config.get("edge_debug_port", 9222)))
+def _spawn(command: list[str]) -> None:
     creation_flags = 0
     if os.name == "nt":
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
@@ -56,4 +57,95 @@ def open_persistent_edge(url: str, config: dict) -> Path:
         close_fds=True,
         creationflags=creation_flags,
     )
+
+
+def open_persistent_edge(url: str, config: dict) -> Path:
+    profile = persistent_edge_profile(config)
+    profile.mkdir(parents=True, exist_ok=True)
+    command = build_edge_command(url, profile, int(config.get("edge_debug_port", 9222)))
+    _spawn(command)
     return profile
+
+
+def _process_image(pid: int) -> str:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return buffer.value
+        return ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def edge_window_handles() -> list[tuple[int, str]]:
+    if os.name != "nt":
+        return []
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    windows: list[tuple[int, str]] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def collect(hwnd, _):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        class_name = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, class_name, len(class_name))
+        if not class_name.value.startswith("Chrome_WidgetWin_"):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not _process_image(pid.value).lower().endswith("\\msedge.exe"):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, len(title))
+        windows.append((int(hwnd), title.value))
+        return True
+
+    user32.EnumWindows(collect, 0)
+    return windows
+
+
+def launch_embedded_edge(url: str, config: dict) -> tuple[Path, set[int]]:
+    profile = persistent_edge_profile(config)
+    profile.mkdir(parents=True, exist_ok=True)
+    previous = {handle for handle, _ in edge_window_handles()}
+    command = build_edge_command(
+        url,
+        profile,
+        int(config.get("edge_debug_port", 9222)),
+        app_mode=True,
+    )
+    _spawn(command)
+    return profile, previous
+
+
+def find_embeddable_edge_window(previous: set[int]) -> int | None:
+    candidates = [(handle, title) for handle, title in edge_window_handles() if handle not in previous]
+    preferred = [item for item in candidates if "点众智投" in item[1]]
+    return (preferred or candidates)[-1][0] if candidates else None
+
+
+def prepare_edge_window_for_embedding(handle: int) -> None:
+    if os.name != "nt":
+        return
+    user32 = ctypes.windll.user32
+    get_style = user32.GetWindowLongPtrW
+    set_style = user32.SetWindowLongPtrW
+    get_style.restype = ctypes.c_ssize_t
+    set_style.restype = ctypes.c_ssize_t
+    style = get_style(handle, -16)
+    window_chrome = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000
+    style = (style & ~window_chrome) | 0x40000000
+    set_style(handle, -16, style)
+    user32.SetWindowPos(handle, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
