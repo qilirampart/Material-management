@@ -5,6 +5,7 @@ import os
 import shutil
 import json
 import filecmp
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -110,13 +111,21 @@ def stage_upload_batch(batch, staging_root):
             raise FileNotFoundError(f"待上传视频不存在：{source}")
         target = target_folder / item["upload_name"]
         if target.exists():
-            if not target.is_file() or not filecmp.cmp(source, target, shallow=False):
-                raise FileExistsError(f"上传暂存文件已存在且内容不一致：{target}")
-        else:
+            if not target.is_file():
+                raise FileExistsError(f"上传暂存位置被目录占用：{target}")
+            if filecmp.cmp(source, target, shallow=False):
+                staged_items.append({**item, "upload_path": str(target)})
+                continue
+
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
             try:
-                os.link(source, target)
+                os.link(source, temporary)
             except OSError:
-                shutil.copy2(source, target)
+                shutil.copy2(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         staged_items.append({**item, "upload_path": str(target)})
     return {**batch, "items": staged_items, "folder": str(target_folder)}
 

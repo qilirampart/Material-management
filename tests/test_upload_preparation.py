@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -98,7 +99,7 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(staged_path.read_bytes(), b"video-content")
             self.assertEqual(staged_path.name, batch["items"][0]["upload_name"])
 
-    def test_staging_rejects_same_size_stale_file(self):
+    def test_staging_replaces_same_size_stale_file(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = root / "source.mp4"
@@ -109,8 +110,44 @@ class UploadPreparationTests(unittest.TestCase):
             target.write_bytes(b"wrong")
             batch = {"index": 1, "items": [{"original_path": str(source), "upload_name": name}]}
 
-            with self.assertRaisesRegex(FileExistsError, "内容不一致"):
+            staged = stage_upload_batch(batch, root / "staging")
+
+            self.assertEqual(source.read_bytes(), b"right")
+            self.assertEqual(target.read_bytes(), b"right")
+            self.assertEqual(staged["items"][0]["upload_path"], str(target))
+
+    def test_staging_rejects_directory_in_place_of_upload_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            source.write_bytes(b"right")
+            name = "upload.mp4"
+            target = root / "staging" / "batch-01" / name
+            target.mkdir(parents=True)
+            batch = {"index": 1, "items": [{"original_path": str(source), "upload_name": name}]}
+
+            with self.assertRaisesRegex(FileExistsError, "暂存位置被目录占用"):
                 stage_upload_batch(batch, root / "staging")
+
+    def test_staging_is_safe_when_same_batch_starts_concurrently(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            source.write_bytes(b"video-content")
+            batch = {
+                "index": 1,
+                "items": [{"original_path": str(source), "upload_name": "upload.mp4"}],
+            }
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(
+                    lambda _: stage_upload_batch(batch, root / "staging"),
+                    range(8),
+                ))
+
+            target = root / "staging" / "batch-01" / "upload.mp4"
+            self.assertEqual(target.read_bytes(), b"video-content")
+            self.assertTrue(all(result["items"][0]["upload_path"] == str(target) for result in results))
 
     def test_confirmed_drama_mapping_and_uploader_are_remembered_locally(self):
         with tempfile.TemporaryDirectory() as folder:
