@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.edge_session import open_persistent_edge
 from src.platform_bridge import build_upload_form_script
 from src.upload import (
     build_upload_plan,
@@ -435,6 +436,7 @@ class PlatformPage(QWidget):
         self.address.setPlaceholderText('请输入公司平台地址')
         self.address.returnPressed.connect(self.open_platform)
         row.addWidget(self.address, 1)
+        row.addWidget(button('复用 Edge 登录', self.open_edge_session))
         row.addWidget(button('打开平台', self.open_platform, True))
         box.addLayout(row)
         self.area = QVBoxLayout()
@@ -477,6 +479,14 @@ class PlatformPage(QWidget):
         box.addWidget(label('只完成文件选择与页面填写，不保存草稿，不提交审核。'))
         body.addWidget(preparation)
         layout.addLayout(body, 1)
+
+    def open_edge_session(self):
+        try:
+            profile = open_persistent_edge(self.address.text(), self.config)
+        except (OSError, ValueError) as exc:
+            QMessageBox.information(self, '无法打开 Edge', str(exc))
+            return
+        self.status.setText(f'已打开专用 Edge · 登录状态保存在 {profile}')
 
     def set_materials(self, rows, records, notes, selected_ids, batch_folder):
         self.materials = eligible_materials(rows, records, notes, selected_ids)
