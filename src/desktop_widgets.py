@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap, QWindow
+from PySide6.QtGui import QCursor, QDesktopServices, QPixmap, QWindow
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QPlainTextEdit,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QPlainTextEdit,
     QFormLayout, QFileDialog, QComboBox, QGroupBox, QMessageBox, QSlider, QSplitter,
     QDialog, QScrollArea, QStackedWidget, QListWidget, QListWidgetItem,
 )
@@ -18,8 +18,10 @@ from src.browser_session import configure_persistent_profile, platform_browser_r
 from src.edge_cdp import edge_target_ids, fit_new_edge_page
 from src.edge_session import (
     find_embeddable_edge_window,
+    focus_edge_window,
     launch_embedded_edge,
     prepare_edge_window_for_embedding,
+    release_edge_input,
 )
 from src.platform_bridge import build_upload_form_script
 from src.upload import (
@@ -446,6 +448,10 @@ class PlatformPage(QWidget):
         self.edge_previous_targets = set()
         self.edge_target_ws_url = None
         self.edge_zoom_task = None
+        self.edge_focus_timer = QTimer(self)
+        self.edge_focus_timer.setInterval(50)
+        self.edge_focus_timer.timeout.connect(self._sync_edge_input_focus)
+        QApplication.instance().focusChanged.connect(self._release_edge_focus_for_widget)
         self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         self.upload_config_dialog = UploadConfigDialog(self.upload_preferences['uploader_initials'], self)
@@ -555,6 +561,7 @@ class PlatformPage(QWidget):
                 self.status.setText('已嵌入专用 Edge · 正在适配页面尺寸…')
                 QTimer.singleShot(1200, self._fit_edge_session)
                 self.edge_button.setEnabled(False)
+                self.edge_focus_timer.start()
                 return
         self.edge_attach_attempt += 1
         if self.edge_attach_attempt < 40:
@@ -593,6 +600,24 @@ class PlatformPage(QWidget):
 
     def _edge_session_fit_failed(self, message):
         self.status.setText(f'Edge 已嵌入 · 页面尺寸自动适配失败：{message}')
+
+    def _sync_edge_input_focus(self):
+        if not self.edge_window_handle or not self.edge_container or not self.edge_container.isVisible():
+            return
+        local_cursor = self.edge_container.mapFromGlobal(QCursor.pos())
+        if self.edge_container.rect().contains(local_cursor) and QApplication.mouseButtons() & Qt.LeftButton:
+            focus_edge_window(self.edge_window_handle)
+
+    def _release_edge_focus_for_widget(self, _old, current):
+        if not self.edge_window_handle or current is None or self.edge_container is None:
+            return
+        if current is not self.edge_container and not self.edge_container.isAncestorOf(current):
+            release_edge_input(self.edge_window_handle)
+
+    def closeEvent(self, event):
+        if self.edge_window_handle:
+            release_edge_input(self.edge_window_handle)
+        super().closeEvent(event)
 
     def set_materials(self, rows, records, notes, selected_ids, batch_folder):
         self.materials = eligible_materials(rows, records, notes, selected_ids)

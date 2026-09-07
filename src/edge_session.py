@@ -15,6 +15,7 @@ EDGE_LOCATIONS = (
     Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
     / "Microsoft/Edge/Application/msedge.exe",
 )
+_ATTACHED_INPUT_THREADS: dict[int, tuple[int, int]] = {}
 
 
 def persistent_edge_profile(config: dict) -> Path:
@@ -88,8 +89,6 @@ def _process_image(pid: int) -> str:
 def edge_window_handles() -> list[tuple[int, str]]:
     if os.name != "nt":
         return []
-    from ctypes import wintypes
-
     user32 = ctypes.windll.user32
     windows: list[tuple[int, str]] = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -149,3 +148,56 @@ def prepare_edge_window_for_embedding(handle: int) -> None:
     style = (style & ~window_chrome) | 0x40000000
     set_style(handle, -16, style)
     user32.SetWindowPos(handle, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+
+
+def _edge_input_window(handle: int) -> int:
+    if os.name != "nt":
+        return handle
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    candidates: list[tuple[int, int]] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def collect(hwnd, _):
+        class_name = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, class_name, len(class_name))
+        if class_name.value == "Chrome_RenderWidgetHostHWND" and user32.IsWindowVisible(hwnd):
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+            candidates.append((area, int(hwnd)))
+        return True
+
+    user32.EnumChildWindows(handle, collect, 0)
+    return max(candidates, default=(0, handle))[1]
+
+
+def focus_edge_window(handle: int) -> bool:
+    if os.name != "nt" or not handle:
+        return False
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    target_thread = user32.GetWindowThreadProcessId(handle, None)
+    current_thread = kernel32.GetCurrentThreadId()
+    if target_thread and target_thread != current_thread and handle not in _ATTACHED_INPUT_THREADS:
+        if user32.AttachThreadInput(current_thread, target_thread, True):
+            _ATTACHED_INPUT_THREADS[handle] = (current_thread, target_thread)
+    root = user32.GetAncestor(handle, 2) or handle
+    user32.SetForegroundWindow(root)
+    user32.SetActiveWindow(handle)
+    input_window = _edge_input_window(handle)
+    focused = user32.SetFocus(input_window)
+    ctypes.windll.imm32.ImmAssociateContextEx(input_window, 0, 0x10)
+    return bool(focused or user32.GetFocus() == input_window)
+
+
+def release_edge_input(handle: int) -> None:
+    if os.name != "nt":
+        return
+    threads = _ATTACHED_INPUT_THREADS.pop(handle, None)
+    if threads:
+        ctypes.windll.user32.AttachThreadInput(threads[0], threads[1], False)
