@@ -38,7 +38,8 @@ QTableWidget::indicator:checked, QCheckBox::indicator:checked { background:#0F76
 QScrollArea { border:0; background:transparent; }
 QStatusBar { background:white; border-top:1px solid #DFE7E9; color:#6D7D84; }
 QLabel#summary { color:#526970; padding:5px 0; }
-QLabel#platformEmpty { color:#72828A; font-size:16px; }
+QWidget#browserStage { background:#EDF2F3; border-radius:7px; }
+QLabel#platformEmpty { color:#72828A; font-size:16px; background:white; border:1px solid #DCE5E7; }
 """
 
 

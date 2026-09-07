@@ -5,10 +5,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtTest import QTest
 
-from src.desktop_widgets import PlatformPage
+from src.desktop_widgets import AspectRatioContainer, PlatformPage
 
 
 class PlatformUploadUiTests(unittest.TestCase):
@@ -44,6 +44,19 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertTrue(Path(page.upload_batches[0]["items"][0]["upload_path"]).is_file())
             self.assertTrue(page.fill_button.isEnabled())
             page.deleteLater()
+
+    def test_browser_stage_centers_a_sixteen_by_nine_view(self):
+        child = QWidget()
+        stage = AspectRatioContainer(child, maximum_width=960)
+        stage.resize(800, 700)
+        stage.show()
+        QTest.qWait(20)
+
+        self.assertEqual(child.width(), 768)
+        self.assertEqual(child.height(), 432)
+        self.assertEqual(child.x(), 16)
+        self.assertEqual(child.y(), 134)
+        stage.deleteLater()
 
     def test_ineligible_material_is_not_added_to_upload_queue(self):
         page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})

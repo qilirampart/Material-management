@@ -47,6 +47,44 @@ def local_open(path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 
 
+class AspectRatioContainer(QWidget):
+    def __init__(self, child=None, ratio=16 / 9, maximum_width=960, padding=16, parent=None):
+        super().__init__(parent)
+        self.ratio = ratio
+        self.maximum_width = maximum_width
+        self.padding = padding
+        self.child = None
+        self.setObjectName('browserStage')
+        if child:
+            self.set_widget(child)
+
+    def set_widget(self, child):
+        if self.child and self.child is not child:
+            self.child.hide()
+        self.child = child
+        child.setParent(self)
+        child.show()
+        self._place_child()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_child()
+
+    def _place_child(self):
+        if not self.child or self.width() <= 0 or self.height() <= 0:
+            return
+        available_width = max(0, self.width() - self.padding * 2)
+        available_height = max(0, self.height() - self.padding * 2)
+        width = min(available_width, self.maximum_width)
+        height = round(width / self.ratio)
+        if height > available_height:
+            height = available_height
+            width = round(height * self.ratio)
+        x = (self.width() - width) // 2
+        y = (self.height() - height) // 2
+        self.child.setGeometry(x, y, width, height)
+
+
 class SettingsPage(QWidget):
     saved = Signal(dict)
 
@@ -357,7 +395,8 @@ class PlatformPage(QWidget):
         self.empty.setWordWrap(True)
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setObjectName('platformEmpty')
-        self.area.addWidget(self.empty)
+        self.browser_stage = AspectRatioContainer(self.empty)
+        self.area.addWidget(self.browser_stage, 1)
         box.addLayout(self.area, 1)
         self.status = label('尚未打开平台 · 浏览模式')
         box.addWidget(self.status)
@@ -562,9 +601,9 @@ class PlatformPage(QWidget):
             self.browser = QWebEngineView(self)
             self.upload_page = UploadPage(self.profile, self.browser)
             self.browser.setPage(self.upload_page)
+            self.browser.setZoomFactor(0.67)
             self.browser.loadFinished.connect(lambda ok: self.status.setText("页面已加载 · 登录账号尚未自动识别" if ok else "网页加载失败，请检查内网连接与平台地址"))
             self.browser.urlChanged.connect(lambda target: self.address.setText(target.toDisplayString()))
-            self.empty.hide()
-            self.area.addWidget(self.browser)
+            self.browser_stage.set_widget(self.browser)
         self.status.setText("正在打开公司平台…")
         self.browser.setUrl(url)
