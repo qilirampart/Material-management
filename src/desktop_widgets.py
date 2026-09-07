@@ -15,7 +15,14 @@ from PySide6.QtWidgets import (
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
 from src.platform_bridge import build_upload_form_script
-from src.upload import build_upload_plan, eligible_materials, stage_upload_batch, suggested_drama_name
+from src.upload import (
+    build_upload_plan,
+    eligible_materials,
+    load_upload_preferences,
+    remember_upload_preferences,
+    stage_upload_batch,
+    suggested_drama_name,
+)
 from src.vision import PHRASES, load_profile
 from src.ui_design import card, label
 
@@ -327,6 +334,8 @@ class PlatformPage(QWidget):
         self.materials = []
         self.batch_folder = None
         self.upload_batches = []
+        self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
+        self.upload_preferences = load_upload_preferences(self.preferences_path)
         layout = QVBoxLayout(self)
         layout.addWidget(title('平台工作台'))
         layout.addWidget(label('在软件内登录公司平台，准备并上传检测通过的素材'))
@@ -373,6 +382,7 @@ class PlatformPage(QWidget):
         self.drama_id.setPlaceholderText('平台建议短剧 ID')
         self.uploader_initials = QLineEdit()
         self.uploader_initials.setPlaceholderText('例如 ZYY')
+        self.uploader_initials.setText(self.upload_preferences['uploader_initials'])
         form.addRow('编导', self.director)
         form.addRow('建议短剧', self.drama_name)
         form.addRow('短剧 ID', self.drama_id)
@@ -410,6 +420,13 @@ class PlatformPage(QWidget):
         proposed = suggested_drama_name(self.materials)
         if proposed:
             self.drama_name.setText(proposed)
+            remembered = self.upload_preferences['dramas'].get(proposed, {})
+            self.drama_id.setText(remembered.get('platform_id', ''))
+            self.director.setText(remembered.get('director', ''))
+        else:
+            self.drama_name.clear()
+            self.drama_id.clear()
+            self.director.clear()
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
         self.preview.setText('填写上传信息后生成批次' if self.materials else '没有符合条件的勾选素材')
 
@@ -424,6 +441,14 @@ class PlatformPage(QWidget):
             )
             staging = self.batch_folder / 'upload-staging'
             self.upload_batches = [stage_upload_batch(batch, staging) for batch in plan]
+            remember_upload_preferences(
+                self.preferences_path,
+                drama_name=self.drama_name.text(),
+                drama_platform_id=self.drama_id.text(),
+                director=self.director.text(),
+                uploader_initials=self.uploader_initials.text(),
+            )
+            self.upload_preferences = load_upload_preferences(self.preferences_path)
         except (OSError, ValueError, KeyError) as exc:
             self.preview.setText(str(exc))
             self.fill_button.setEnabled(False)

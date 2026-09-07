@@ -20,7 +20,10 @@ class PlatformUploadUiTests(unittest.TestCase):
             root = Path(folder)
             video = root / "download.mp4"
             video.write_bytes(b"video")
-            page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(root / "upload-preferences.json"),
+            })
             rows = [{"video_id": "1", "input_error": "", "source": {"剧名": "婚房门后的秘密"}}]
             records = {"1": {"status": "sample_clear", "download": "已下载", "video_path": str(video)}}
 

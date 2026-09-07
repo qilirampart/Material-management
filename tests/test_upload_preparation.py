@@ -3,7 +3,14 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from src.upload import build_upload_plan, eligible_materials, stage_upload_batch, suggested_drama_name
+from src.upload import (
+    build_upload_plan,
+    eligible_materials,
+    load_upload_preferences,
+    remember_upload_preferences,
+    stage_upload_batch,
+    suggested_drama_name,
+)
 
 
 class UploadPreparationTests(unittest.TestCase):
@@ -88,6 +95,23 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertTrue(staged_path.is_file())
             self.assertEqual(staged_path.read_bytes(), b"video-content")
             self.assertEqual(staged_path.name, batch["items"][0]["upload_name"])
+
+    def test_confirmed_drama_mapping_and_uploader_are_remembered_locally(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "upload-preferences.json"
+
+            remember_upload_preferences(
+                path,
+                drama_name="婚房门后的秘密",
+                drama_platform_id="98765",
+                director="王俨",
+                uploader_initials="ZYY",
+            )
+            preferences = load_upload_preferences(path)
+
+            self.assertEqual(preferences["dramas"]["婚房门后的秘密"]["platform_id"], "98765")
+            self.assertEqual(preferences["dramas"]["婚房门后的秘密"]["director"], "王俨")
+            self.assertEqual(preferences["uploader_initials"], "ZYY")
 
 
 if __name__ == "__main__":

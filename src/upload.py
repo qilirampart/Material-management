@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import os
 import shutil
+import json
 from datetime import date
 from pathlib import Path
 
@@ -117,3 +118,30 @@ def stage_upload_batch(batch, staging_root):
                 shutil.copy2(source, target)
         staged_items.append({**item, "upload_path": str(target)})
     return {**batch, "items": staged_items, "folder": str(target_folder)}
+
+
+def load_upload_preferences(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        data = {}
+    dramas = data.get("dramas") if isinstance(data.get("dramas"), dict) else {}
+    return {
+        "dramas": dramas,
+        "uploader_initials": str(data.get("uploader_initials", "")).strip(),
+    }
+
+
+def remember_upload_preferences(path, *, drama_name, drama_platform_id, director, uploader_initials):
+    path = Path(path)
+    preferences = load_upload_preferences(path)
+    name = str(drama_name).strip()
+    preferences["dramas"][name] = {
+        "platform_id": str(drama_platform_id).strip(),
+        "director": str(director).strip(),
+    }
+    preferences["uploader_initials"] = str(uploader_initials).strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
