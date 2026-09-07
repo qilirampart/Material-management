@@ -157,7 +157,10 @@ class PlatformUploadUiTests(unittest.TestCase):
             page.deleteLater()
 
     @patch("src.desktop_widgets.QMessageBox.information")
-    @patch("src.desktop_widgets.set_edge_file_input", return_value=1)
+    @patch(
+        "src.desktop_widgets.set_edge_file_input",
+        return_value={"input_count": 1, "plugin_count": 1, "names": ["upload.mp4"]},
+    )
     @patch(
         "src.desktop_widgets.evaluate_edge_page",
         return_value={"ok": True, "code": "FILE_INPUT_READY", "message": "ready"},
@@ -178,13 +181,14 @@ class PlatformUploadUiTests(unittest.TestCase):
 
             page.fill_platform_form()
             for _ in range(100):
-                if "1 个文件" in page.status.text():
+                if "upload.mp4" in page.status.text():
                     break
                 QTest.qWait(10)
 
             message.assert_not_called()
             set_files.assert_called_once()
-            self.assertIn("1 个文件", page.status.text())
+            self.assertIn("平台上传组件已接收 1 个文件", page.status.text())
+            self.assertIn("upload.mp4", page.status.text())
             page.deleteLater()
 
     def test_new_material_batch_requires_explicit_history_or_platform_selection(self):

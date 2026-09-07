@@ -28,13 +28,19 @@ class EdgeCdpTests(unittest.TestCase):
         socket.recv.side_effect = [
             json.dumps({"id": 1, "result": {"result": {"objectId": "input-1"}}}),
             json.dumps({"id": 2, "result": {}}),
-            json.dumps({"id": 3, "result": {"result": {"result": {"value": 2}}}}),
+            json.dumps({"id": 3, "result": {"result": {"value": {
+                "inputCount": 2,
+                "pluginCount": 2,
+                "names": ["a.mp4", "b.mp4"],
+            }}}}),
         ]
         connect.return_value = socket
 
-        count = set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4", "b.mp4"])
+        result = set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4", "b.mp4"])
 
-        self.assertEqual(count, 2)
+        self.assertEqual(result["input_count"], 2)
+        self.assertEqual(result["plugin_count"], 2)
+        self.assertEqual(result["names"], ["a.mp4", "b.mp4"])
         payloads = [json.loads(call.args[0]) for call in socket.send.call_args_list]
         self.assertEqual(payloads[1]["method"], "DOM.setFileInputFiles")
         self.assertEqual(payloads[1]["params"]["files"], ["a.mp4", "b.mp4"])

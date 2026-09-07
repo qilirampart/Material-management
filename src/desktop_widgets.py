@@ -911,10 +911,18 @@ class PlatformPage(QWidget):
                 self.upload_page.clear_queued_files()
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
 
-    def _edge_files_selected(self, count):
+    def _edge_files_selected(self, result):
         self.fill_button.setEnabled(True)
-        self.status.setText(f'平台页面已填写并选择 {count} 个文件')
-        self.preview.setText(self.preview.text() + '\n已选择上传文件；未保存草稿，未提交审核。')
+        result = result if isinstance(result, dict) else {}
+        count = int(result.get('plugin_count') or result.get('input_count') or 0)
+        names = [str(name) for name in result.get('names', [])]
+        visible_name = names[0] if names else '未返回文件名'
+        more = f' 等 {count} 个文件' if count > 1 else ''
+        self.status.setText(f'平台上传组件已接收 {count} 个文件：{visible_name}{more}')
+        self.preview.setText(
+            self.preview.text()
+            + f'\n平台已接收：{visible_name}{more}；未保存草稿，未提交审核。'
+        )
 
     def _edge_files_failed(self, message):
         self.fill_button.setEnabled(True)

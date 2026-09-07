@@ -64,12 +64,32 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
             "method": "Runtime.callFunctionOn",
             "params": {
                 "objectId": object_id,
-                "functionDeclaration": "function(){this.dispatchEvent(new Event('change',{bubbles:true}));return this.files.length}",
+                "functionDeclaration": (
+                    "function(){"
+                    "this.dispatchEvent(new Event('change',{bubbles:true}));"
+                    "const win=this.ownerDocument.defaultView;"
+                    "const plugin=win.jQuery?.(this).data?.('fileinput');"
+                    "return {inputCount:this.files.length,"
+                    "pluginCount:plugin?.getFilesCount?.()??null,"
+                    "names:[...this.files].map(file=>file.name)}"
+                    "}"
+                ),
                 "returnByValue": True,
             },
         }))
         changed = _receive_response(socket, 3)
-        return int(changed.get("result", {}).get("result", {}).get("value", len(files)))
+        verification = changed.get("result", {}).get("result", {}).get("value", {})
+        input_count = int(verification.get("inputCount", 0))
+        plugin_count = verification.get("pluginCount")
+        if input_count != len(files):
+            raise RuntimeError(f"文件控件仅接收 {input_count}/{len(files)} 个文件。")
+        if plugin_count is not None and int(plugin_count) != input_count:
+            raise RuntimeError(f"平台上传组件仅接收 {plugin_count}/{input_count} 个文件。")
+        return {
+            "input_count": input_count,
+            "plugin_count": int(plugin_count) if plugin_count is not None else None,
+            "names": [str(name) for name in verification.get("names", [])],
+        }
     finally:
         socket.close()
 
