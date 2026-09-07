@@ -49,6 +49,7 @@ class EdgeCdpTests(unittest.TestCase):
         self.assertEqual(payloads[1]["method"], "DOM.setFileInputFiles")
         self.assertEqual(payloads[1]["params"]["files"], ["a.mp4", "b.mp4"])
 
+    @patch("src.edge_cdp.FILE_PREVIEW_WAIT_ATTEMPTS", 1)
     @patch("src.edge_cdp.websocket.create_connection")
     def test_rejects_file_selection_without_video_preview(self, connect):
         socket = MagicMock()
@@ -62,11 +63,47 @@ class EdgeCdpTests(unittest.TestCase):
                 "videoPreviewCount": 0,
                 "names": ["a.mp4"],
             }}}}),
+            json.dumps({"id": 4, "result": {"result": {"value": {
+                "inputCount": 1,
+                "pluginCount": 1,
+                "previewCount": 0,
+                "videoPreviewCount": 0,
+                "names": ["a.mp4"],
+            }}}}),
         ]
         connect.return_value = socket
 
-        with self.assertRaisesRegex(RuntimeError, "文件预览"):
+        with self.assertRaisesRegex(RuntimeError, "视频预览"):
             set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4"])
+
+    @patch("src.edge_cdp.time.sleep")
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_waits_for_platform_video_preview(self, connect, sleep):
+        socket = MagicMock()
+        socket.recv.side_effect = [
+            json.dumps({"id": 1, "result": {"result": {"objectId": "input-1"}}}),
+            json.dumps({"id": 2, "result": {}}),
+            json.dumps({"id": 3, "result": {"result": {"value": {
+                "inputCount": 1,
+                "pluginCount": 1,
+                "previewCount": 0,
+                "videoPreviewCount": 0,
+                "names": ["a.mp4"],
+            }}}}),
+            json.dumps({"id": 4, "result": {"result": {"value": {
+                "inputCount": 1,
+                "pluginCount": 1,
+                "previewCount": 1,
+                "videoPreviewCount": 1,
+                "names": ["a.mp4"],
+            }}}}),
+        ]
+        connect.return_value = socket
+
+        result = set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4"])
+
+        self.assertEqual(result["video_preview_count"], 1)
+        sleep.assert_called_once()
 
     @patch("src.edge_cdp.edge_targets", return_value=[{"id": "old"}, {"id": "new"}])
     def test_target_snapshot_contains_ids(self, _targets):

@@ -6,6 +6,13 @@ import urllib.request
 
 import websocket
 
+FILE_PREVIEW_WAIT_ATTEMPTS = 30
+FILE_PREVIEW_WAIT_INTERVAL = 0.1
+
+
+class EdgeFileSelectionError(RuntimeError):
+    user_safe = True
+
 
 def _receive_response(socket, request_id: int):
     while True:
@@ -86,6 +93,62 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
         plugin_count = verification.get("pluginCount")
         preview_count = verification.get("previewCount")
         video_preview_count = verification.get("videoPreviewCount")
+        request_id = 4
+        while (
+            input_count == len(files)
+            and plugin_count is not None
+            and int(plugin_count) == input_count
+            and (
+                preview_count is None
+                or video_preview_count is None
+                or int(preview_count) < input_count
+                or int(video_preview_count) < input_count
+            )
+            and request_id < 4 + FILE_PREVIEW_WAIT_ATTEMPTS
+        ):
+            time.sleep(FILE_PREVIEW_WAIT_INTERVAL)
+            socket.send(json.dumps({
+                "id": request_id,
+                "method": "Runtime.callFunctionOn",
+                "params": {
+                    "objectId": object_id,
+                    "functionDeclaration": (
+                        "function(){"
+                        "const win=this.ownerDocument.defaultView;"
+                        "const plugin=win.jQuery?.(this).data?.('fileinput');"
+                        "const previews=[...this.ownerDocument.querySelectorAll('.file-preview-frame')];"
+                        "return {inputCount:this.files.length,"
+                        "pluginCount:plugin?.getFilesCount?.()??null,"
+                        "previewCount:previews.length,"
+                        "videoPreviewCount:previews.filter(frame=>frame.dataset.template==='video'&&frame.querySelector('video')).length,"
+                        "names:[...this.files].map(file=>file.name)}"
+                        "}"
+                    ),
+                    "returnByValue": True,
+                },
+            }))
+            checked = _receive_response(socket, request_id)
+            verification = checked.get("result", {}).get("result", {}).get("value", verification)
+            input_count = int(verification.get("inputCount", input_count))
+            plugin_count = verification.get("pluginCount", plugin_count)
+            preview_count = verification.get("previewCount", preview_count)
+            video_preview_count = verification.get("videoPreviewCount", video_preview_count)
+            request_id += 1
+        if (
+            input_count == len(files)
+            and plugin_count is not None
+            and int(plugin_count) == input_count
+            and (
+                preview_count is None
+                or video_preview_count is None
+                or int(preview_count) < input_count
+                or int(video_preview_count) < input_count
+            )
+        ):
+            raise EdgeFileSelectionError(
+                f"平台视频预览生成超时：已接收 {input_count} 个文件，"
+                f"仅显示 {int(video_preview_count or 0)} 个视频预览。"
+            )
         if input_count != len(files):
             raise RuntimeError(f"文件控件仅接收 {input_count}/{len(files)} 个文件。")
         if plugin_count is not None and int(plugin_count) != input_count:

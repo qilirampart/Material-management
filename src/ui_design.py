@@ -82,7 +82,10 @@ class Background(QThread):
             self.result.emit(self.function())
         except Exception as exc:
             # Network exceptions can contain tokens or signed URLs.
-            self.failed.emit('操作失败：' + type(exc).__name__ + '。请检查配置、网络或文件权限。')
+            if getattr(exc, 'user_safe', False):
+                self.failed.emit(str(exc))
+            else:
+                self.failed.emit('操作失败：' + type(exc).__name__ + '。请检查配置、网络或文件权限。')
 
 
 class SettingsPage(QWidget):
