@@ -32,6 +32,9 @@ class PlatformUploadUiTests(unittest.TestCase):
 
             self.assertEqual(page.drama_name.text(), "婚房门后的秘密")
             self.assertIn("1 条可上传", page.material_summary.text())
+            self.assertGreaterEqual(page.upload_config_dialog.minimumWidth(), 480)
+            self.assertIs(page.director.window(), page.upload_config_dialog)
+            self.assertTrue(page.batch_selector.isHidden())
             page.director.setText("王俨")
             page.drama_id.setEditText("98765")
             page.uploader_initials.setText("ZYY")
@@ -43,6 +46,7 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertEqual(len(page.upload_batches), 1)
             self.assertTrue(Path(page.upload_batches[0]["items"][0]["upload_path"]).is_file())
             self.assertTrue(page.fill_button.isEnabled())
+            self.assertFalse(page.batch_selector.isHidden())
             page.deleteLater()
 
     def test_browser_stage_centers_a_sixteen_by_nine_view(self):

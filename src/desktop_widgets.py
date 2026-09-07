@@ -364,6 +364,45 @@ class ReviewPage(QWidget):
         self.save_note()
 
 
+class UploadConfigDialog(QDialog):
+    submitted = Signal()
+
+    def __init__(self, uploader_initials='', parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('配置上传批次')
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+        layout.addWidget(label('上传信息', 'section'))
+        layout.addWidget(label('剧名由需求表预填；同一剧名可保留多个平台短剧 ID。'))
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        self.director = QLineEdit()
+        self.director.setPlaceholderText('选择或填写编导')
+        self.drama_name = QLineEdit()
+        self.drama_name.setPlaceholderText('从导入表格的剧名预填')
+        self.drama_id = QComboBox()
+        self.drama_id.setEditable(True)
+        self.drama_id.lineEdit().setPlaceholderText('平台建议短剧 ID')
+        self.uploader_initials = QLineEdit(uploader_initials)
+        self.uploader_initials.setPlaceholderText('例如 ZYY')
+        form.addRow('编导', self.director)
+        form.addRow('建议短剧', self.drama_name)
+        form.addRow('短剧 ID', self.drama_id)
+        form.addRow('上传人缩写', self.uploader_initials)
+        layout.addLayout(form)
+        self.message = label('生成后将按每批最多 50 条准备上传文件。')
+        layout.addWidget(self.message)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        actions.addWidget(button('取消', self.reject))
+        self.generate_button = button('生成上传批次', lambda: self.submitted.emit(), True)
+        actions.addWidget(self.generate_button)
+        layout.addLayout(actions)
+
+
 class PlatformPage(QWidget):
     def __init__(self, config):
         super().__init__()
@@ -375,6 +414,14 @@ class PlatformPage(QWidget):
         self.staging_task = None
         self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
         self.upload_preferences = load_upload_preferences(self.preferences_path)
+        self.upload_config_dialog = UploadConfigDialog(self.upload_preferences['uploader_initials'], self)
+        self.upload_config_dialog.submitted.connect(self.prepare_upload)
+        self.director = self.upload_config_dialog.director
+        self.drama_name = self.upload_config_dialog.drama_name
+        self.drama_id = self.upload_config_dialog.drama_id
+        self.uploader_initials = self.upload_config_dialog.uploader_initials
+        self.drama_id.currentTextChanged.connect(self.apply_remembered_director)
+        self.prepare_button = self.upload_config_dialog.generate_button
         layout = QVBoxLayout(self)
         layout.addWidget(title('平台工作台'))
         layout.addWidget(label('在软件内登录公司平台，准备并上传检测通过的素材'))
@@ -411,30 +458,14 @@ class PlatformPage(QWidget):
         self.material_list.setAlternatingRowColors(True)
         box.addWidget(self.material_list)
         box.addWidget(label('固定信息', 'section'))
-        box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧 · 产品不限 · 付费'))
-        box.addWidget(label('上传信息', 'section'))
-        form = QFormLayout()
-        self.director = QLineEdit()
-        self.director.setPlaceholderText('选择或填写编导')
-        self.drama_name = QLineEdit()
-        self.drama_name.setPlaceholderText('从导入表格的剧名预填')
-        self.drama_id = QComboBox()
-        self.drama_id.setEditable(True)
-        self.drama_id.lineEdit().setPlaceholderText('平台建议短剧 ID')
-        self.drama_id.currentTextChanged.connect(self.apply_remembered_director)
-        self.uploader_initials = QLineEdit()
-        self.uploader_initials.setPlaceholderText('例如 ZYY')
-        self.uploader_initials.setText(self.upload_preferences['uploader_initials'])
-        form.addRow('编导', self.director)
-        form.addRow('建议短剧', self.drama_name)
-        form.addRow('短剧 ID', self.drama_id)
-        form.addRow('上传人缩写', self.uploader_initials)
-        box.addLayout(form)
-        self.prepare_button = button('生成上传批次', self.prepare_upload, True)
+        box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · 按部门可见'))
+        self.configure_button = button('配置上传信息', self.open_upload_config, True)
+        self.configure_button.setEnabled(False)
+        box.addWidget(self.configure_button)
         self.prepare_button.setEnabled(False)
-        box.addWidget(self.prepare_button)
         self.batch_selector = QComboBox()
         self.batch_selector.setEnabled(False)
+        self.batch_selector.setVisible(False)
         box.addWidget(self.batch_selector)
         self.preview = label('尚未生成上传文件名')
         self.preview.setWordWrap(True)
@@ -453,6 +484,7 @@ class PlatformPage(QWidget):
         self.upload_batches = []
         self.batch_selector.clear()
         self.batch_selector.setEnabled(False)
+        self.batch_selector.setVisible(False)
         self.fill_button.setEnabled(False)
         self.material_list.clear()
         for material in self.materials:
@@ -474,7 +506,14 @@ class PlatformPage(QWidget):
             self.drama_id.clear()
             self.director.clear()
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
+        self.configure_button.setEnabled(bool(self.materials and self.batch_folder))
         self.preview.setText('填写上传信息后生成批次' if self.materials else '没有符合条件的勾选素材')
+
+    def open_upload_config(self):
+        if not self.materials:
+            return
+        self.upload_config_dialog.message.setText('生成后将按每批最多 50 条准备上传文件。')
+        self.upload_config_dialog.exec()
 
     def prepare_upload(self):
         try:
@@ -496,8 +535,10 @@ class PlatformPage(QWidget):
             self.upload_preferences = load_upload_preferences(self.preferences_path)
         except (OSError, ValueError, KeyError) as exc:
             self.preview.setText(str(exc))
+            self.upload_config_dialog.message.setText(str(exc))
             self.fill_button.setEnabled(False)
             return
+        self.upload_config_dialog.accept()
         self.prepare_button.setEnabled(False)
         self.fill_button.setEnabled(False)
         self.preview.setText('正在后台生成上传暂存文件…')
@@ -518,6 +559,7 @@ class PlatformPage(QWidget):
         for batch in self.upload_batches:
             self.batch_selector.addItem(f"第 {batch['index']} 批 · {len(batch['items'])} 条", batch['index'] - 1)
         self.batch_selector.setEnabled(bool(self.upload_batches))
+        self.batch_selector.setVisible(bool(self.upload_batches))
         self.fill_button.setEnabled(bool(self.upload_batches))
         first = self.upload_batches[0]['items'][0]['upload_name'] if self.upload_batches else ''
         self.preview.setText(f'已生成 {len(self.upload_batches)} 个批次\n文件名示例：{first}')
