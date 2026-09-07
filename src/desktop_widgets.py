@@ -662,15 +662,16 @@ class PlatformPage(QWidget):
             self.material_list.addItem(f"{drama} · {material['video_id']}")
         self.material_summary.setText(f'{len(self.materials)} 条可上传 · 仅包含当前勾选且检测通过的素材')
         proposed = suggested_drama_name(self.materials)
+        self.refresh_upload_history()
         if proposed:
             self.drama_name.setText(proposed)
             remembered = self.upload_preferences['dramas'].get(proposed, {})
             self.drama_id.blockSignals(True)
             self.drama_id.clear()
             self.drama_id.addItems(remembered.get('ids', {}).keys())
-            self.drama_id.setCurrentText(remembered.get('last_id', ''))
+            self.drama_id.setCurrentIndex(-1)
             self.drama_id.blockSignals(False)
-            self.apply_remembered_director(self.drama_id.currentText())
+            self.director.clear()
         else:
             self.drama_name.clear()
             self.drama_id.clear()

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from PySide6.QtTest import QTest
 
 from src.desktop_widgets import AspectRatioContainer, PlatformPage
+from src.upload import remember_upload_preferences
 
 
 class PlatformUploadUiTests(unittest.TestCase):
@@ -181,6 +182,38 @@ class PlatformUploadUiTests(unittest.TestCase):
             message.assert_not_called()
             set_files.assert_called_once()
             self.assertIn("1 个文件", page.status.text())
+            page.deleteLater()
+
+    def test_new_material_batch_requires_explicit_history_or_platform_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            preferences = root / "upload-preferences.json"
+            video = root / "download.mp4"
+            video.write_bytes(b"video")
+            remember_upload_preferences(
+                preferences,
+                drama_name="婚房门后的秘密",
+                drama_platform_id="41000339406",
+                director="王仟",
+                uploader_initials="ZYY",
+            )
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(preferences),
+            })
+
+            page.set_materials(
+                [{"video_id": "1", "input_error": "", "source": {"剧名": "婚房门后的秘密"}}],
+                {"1": {"status": "sample_clear", "download": "已下载", "video_path": str(video)}},
+                {},
+                {"1"},
+                root,
+            )
+
+            self.assertEqual(page.drama_name.text(), "婚房门后的秘密")
+            self.assertEqual(page.drama_id.currentText(), "")
+            self.assertEqual(page.director.text(), "")
+            self.assertEqual(page.upload_config_dialog.history.currentIndex(), 0)
             page.deleteLater()
 
 
