@@ -71,6 +71,19 @@ class PlatformUploadUiTests(unittest.TestCase):
 
         self.assertIn("0 条可上传", page.material_summary.text())
         self.assertFalse(page.prepare_button.isEnabled())
+        self.assertTrue(page.edge_button.isHidden())
+        self.assertEqual(page.internal_browser_button.text(), "打开平台")
+        page.deleteLater()
+
+    def test_development_edge_entry_is_opt_in(self):
+        page = PlatformPage({
+            "platform_url": "https://market.wuread.cn/market-admin/",
+            "developer_edge_mode": True,
+        })
+        page.show()
+        QTest.qWait(10)
+        self.assertFalse(page.edge_button.isHidden())
+        self.assertEqual(page.internal_browser_button.text(), "新建登录")
         page.deleteLater()
 
 

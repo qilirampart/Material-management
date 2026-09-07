@@ -6,5 +6,7 @@
   "logo_reference": "assets/references/hongguo_logo.png",
   "platform_url": "https://market.wuread.cn/market-admin/",
   "edge_profile_path": "",
-  "edge_debug_port": 9222
+  "edge_debug_port": 9222,
+  "developer_edge_mode": false,
+  "platform_browser_data_path": ""
 }

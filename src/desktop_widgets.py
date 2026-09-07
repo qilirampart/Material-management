@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.browser_session import configure_persistent_profile, platform_browser_root
 from src.edge_cdp import edge_target_ids, fit_new_edge_page
 from src.edge_session import (
     find_embeddable_edge_window,
@@ -468,9 +469,16 @@ class PlatformPage(QWidget):
         self.address.setPlaceholderText('请输入公司平台地址')
         self.address.returnPressed.connect(self.open_platform)
         row.addWidget(self.address, 1)
-        self.edge_button = button('打开已登录 Edge', self.open_edge_session, True)
+        developer_mode = bool(config.get('developer_edge_mode', False))
+        self.edge_button = button('打开已登录 Edge', self.open_edge_session)
+        self.edge_button.setVisible(developer_mode)
         row.addWidget(self.edge_button)
-        row.addWidget(button('新建登录', self.open_platform))
+        self.internal_browser_button = button(
+            '新建登录' if developer_mode else '打开平台',
+            self.open_platform,
+            True,
+        )
+        row.addWidget(self.internal_browser_button)
         box.addLayout(row)
         self.area = QVBoxLayout()
         self.empty = QLabel('▣\n\n打开公司素材平台\n\n首次使用请填写平台地址，打开后由您自行登录。\n\n登录状态保存在本机，平台要求重新验证时请再次登录。')
@@ -745,9 +753,8 @@ class PlatformPage(QWidget):
                     return super().chooseFiles(mode, old_files, accepted_mime_types)
 
             self.profile = QWebEngineProfile("company-platform", self)
-            folder = DATA_ROOT / "runtime" / "browser"
-            self.profile.setPersistentStoragePath(str(folder / "storage"))
-            self.profile.setCachePath(str(folder / "cache"))
+            folder = platform_browser_root(self.config)
+            configure_persistent_profile(self.profile, folder)
             self.browser = QWebEngineView(self)
             self.upload_page = UploadPage(self.profile, self.browser)
             self.browser.setPage(self.upload_page)
