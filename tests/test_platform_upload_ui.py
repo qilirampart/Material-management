@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -84,6 +85,22 @@ class PlatformUploadUiTests(unittest.TestCase):
         QTest.qWait(10)
         self.assertFalse(page.edge_button.isHidden())
         self.assertEqual(page.internal_browser_button.text(), "新建登录")
+        page.deleteLater()
+
+    @patch("src.desktop_widgets.QMessageBox.information")
+    @patch("src.desktop_widgets.launch_embedded_edge", side_effect=RuntimeError("boom"))
+    @patch("src.desktop_widgets.edge_target_ids", return_value=set())
+    def test_edge_launch_failure_is_visible_and_retryable(self, _targets, _launch, message):
+        page = PlatformPage({
+            "platform_url": "https://market.wuread.cn/market-admin/",
+            "developer_edge_mode": True,
+        })
+
+        page.open_edge_session()
+
+        self.assertTrue(page.edge_button.isEnabled())
+        self.assertIn("失败", page.status.text())
+        message.assert_called_once()
         page.deleteLater()
 
 

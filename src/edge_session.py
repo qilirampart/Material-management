@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -69,8 +70,6 @@ def open_persistent_edge(url: str, config: dict) -> Path:
 
 
 def _process_image(pid: int) -> str:
-    from ctypes import wintypes
-
     kernel32 = ctypes.windll.kernel32
     kernel32.OpenProcess.restype = wintypes.HANDLE
     handle = kernel32.OpenProcess(0x1000, False, pid)
@@ -153,8 +152,6 @@ def prepare_edge_window_for_embedding(handle: int) -> None:
 def _edge_input_window(handle: int) -> int:
     if os.name != "nt":
         return handle
-    from ctypes import wintypes
-
     user32 = ctypes.windll.user32
     candidates: list[tuple[int, int]] = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -177,8 +174,6 @@ def _edge_input_window(handle: int) -> int:
 def focus_edge_window(handle: int) -> bool:
     if os.name != "nt" or not handle:
         return False
-    from ctypes import wintypes
-
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
     target_thread = user32.GetWindowThreadProcessId(handle, None)

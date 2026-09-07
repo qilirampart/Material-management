@@ -531,6 +531,8 @@ class PlatformPage(QWidget):
         if self.edge_container is not None:
             self.edge_container.setFocus()
             return
+        self.edge_button.setEnabled(False)
+        self.status.setText('正在启动并嵌入已登录 Edge…')
         try:
             port = int(self.config.get('edge_debug_port', 9222))
             try:
@@ -540,11 +542,12 @@ class PlatformPage(QWidget):
             self.edge_profile, self.edge_previous_windows = launch_embedded_edge(
                 self.address.text(), self.config
             )
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
+            self.edge_button.setEnabled(True)
+            self.status.setText('打开已登录 Edge 失败')
             QMessageBox.information(self, '无法打开 Edge', str(exc))
             return
         self.edge_attach_attempt = 0
-        self.status.setText('正在启动并嵌入已登录 Edge…')
         QTimer.singleShot(250, self._attach_edge_session)
 
     def _attach_edge_session(self):
@@ -567,6 +570,7 @@ class PlatformPage(QWidget):
         if self.edge_attach_attempt < 40:
             QTimer.singleShot(250, self._attach_edge_session)
         else:
+            self.edge_button.setEnabled(True)
             self.status.setText('Edge 已启动，但未找到可嵌入窗口，请重试。')
 
     def _fit_edge_session(self):

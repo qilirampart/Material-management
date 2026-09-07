@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 from src.edge_session import (
     build_edge_command,
+    edge_window_handles,
     find_embeddable_edge_window,
     launch_embedded_edge,
     open_persistent_edge,
@@ -14,6 +16,10 @@ from src.edge_session import (
 
 
 class EdgeSessionTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows native window enumeration")
+    def test_native_edge_window_enumeration_initializes(self):
+        self.assertIsInstance(edge_window_handles(), list)
+
     def test_profile_defaults_to_project_runtime(self):
         self.assertEqual(persistent_edge_profile({}).name, "edge-cdp-profile")
 
