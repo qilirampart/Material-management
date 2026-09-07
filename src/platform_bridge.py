@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import json
+
+from src.upload import FIXED_DEPARTMENTS
+
+
+def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count):
+    payload = json.dumps({
+        "director": str(director).strip(),
+        "dramaName": str(drama_name).strip(),
+        "dramaId": str(drama_platform_id).strip(),
+        "departments": FIXED_DEPARTMENTS,
+        "fileCount": int(file_count),
+    }, ensure_ascii=False)
+    return f"""(() => {{
+  const data = {payload};
+  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const main = mainFrame?.contentDocument;
+  if (!main) return {{ok:false, code:'MATERIAL_PAGE_MISSING', message:'请先进入素材管理页面'}};
+  const uploadFrame = [...main.querySelectorAll('iframe')]
+    .filter(frame => frame.src.includes('material_add')).at(-1);
+  if (!uploadFrame?.contentDocument) {{
+    const openButton = [...main.querySelectorAll('button,a')]
+      .find(element => element.innerText.trim() === '上传素材');
+    if (!openButton) return {{ok:false, code:'UPLOAD_ENTRY_MISSING', message:'未找到上传素材入口'}};
+    openButton.click();
+    return {{ok:false, code:'OPENING_FORM', message:'正在打开上传表单'}};
+  }}
+  const doc = uploadFrame.contentDocument;
+  const win = uploadFrame.contentWindow;
+  const api = win.formSelects || win.layui?.formSelects;
+  if (!api?.value) return {{ok:false, code:'FORM_API_MISSING', message:'页面多选组件尚未加载'}};
+  const dispatch = element => {{
+    element.dispatchEvent(new win.Event('input', {{bubbles:true}}));
+    element.dispatchEvent(new win.Event('change', {{bubbles:true}}));
+  }};
+  const radio = (name, value) => {{
+    const element = [...doc.querySelectorAll(`input[type=radio][name="${{name}}"]`)]
+      .find(item => item.value === value);
+    if (!element) throw new Error(`字段不存在：${{name}}=${{value}}`);
+    element.checked = true;
+    dispatch(element);
+  }};
+  const setXm = (name, values, additions=[]) => {{
+    const select = doc.querySelector(`[xm-select="${{name}}"]`);
+    if (!select) throw new Error(`字段不存在：${{name}}`);
+    for (const item of additions) {{
+      if (![...select.options].some(option => option.value === item.value))
+        select.add(new win.Option(item.name, item.value));
+    }}
+    api.render(name);
+    api.value(name, values, true);
+  }};
+  try {{
+    const sourceType = doc.querySelector('#sourceType');
+    sourceType.value = 'video';
+    dispatch(sourceType);
+    radio('propertiesFirst', '原创');
+    setXm('sponsorSelect', ['张雯燕']);
+    setXm('directorSelect', [data.director]);
+    radio('secondLevelLabel_2', '短剧');
+    radio('adTargetType', 'play');
+    setXm('bookIdSelect', [data.dramaId], [{{name:data.dramaName, value:data.dramaId}}]);
+    radio('appName', '-1');
+    radio('payFlag', '1');
+    radio('viewRange', '1');
+    setXm('deptSelect', data.departments);
+    const fileInput = doc.querySelector('#uploadVideoFile');
+    if (!fileInput) throw new Error('未找到视频文件选择控件');
+    fileInput.click();
+    return {{ok:true, code:'FILES_REQUESTED', message:`已填写页面并选择 ${{data.fileCount}} 个文件`}};
+  }} catch (error) {{
+    return {{ok:false, code:'FILL_FAILED', message:String(error?.message || error)}};
+  }}
+}})()"""

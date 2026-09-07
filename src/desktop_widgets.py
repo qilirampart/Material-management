@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.platform_bridge import build_upload_form_script
 from src.upload import build_upload_plan, eligible_materials, stage_upload_batch, suggested_drama_name
 from src.vision import PHRASES, load_profile
 from src.ui_design import card, label
@@ -441,7 +442,38 @@ class PlatformPage(QWidget):
             return
         if not self.upload_batches:
             return
-        self.status.setText('上传页面自动填写尚未连接 · 批次文件已准备')
+        batch = self.upload_batches[self.batch_selector.currentData() or 0]
+        paths = [item['upload_path'] for item in batch['items']]
+        if not all(Path(path).is_file() for path in paths):
+            self.status.setText('上传暂存文件缺失，请重新生成批次')
+            return
+        self.upload_page.queue_files(paths)
+        self.fill_button.setEnabled(False)
+        self.status.setText(f"正在填写第 {batch['index']} 批 · {len(paths)} 条")
+        self._run_platform_fill(batch, 0)
+
+    def _run_platform_fill(self, batch, attempt):
+        script = build_upload_form_script(
+            director=self.director.text(),
+            drama_name=self.drama_name.text(),
+            drama_platform_id=self.drama_id.text(),
+            file_count=len(batch['items']),
+        )
+        self.browser.page().runJavaScript(script, lambda result: self._platform_fill_finished(batch, attempt, result))
+
+    def _platform_fill_finished(self, batch, attempt, result):
+        result = result if isinstance(result, dict) else {}
+        if result.get('code') == 'OPENING_FORM' and attempt < 5:
+            self.status.setText('已打开上传表单，等待页面控件加载…')
+            QTimer.singleShot(800, lambda: self._run_platform_fill(batch, attempt + 1))
+            return
+        self.fill_button.setEnabled(True)
+        if result.get('ok'):
+            self.status.setText(result.get('message', '平台表单已填写'))
+            self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
+        else:
+            self.upload_page.clear_queued_files()
+            self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
 
     def open_platform(self):
         url = QUrl(self.address.text().strip())
@@ -451,12 +483,31 @@ class PlatformPage(QWidget):
         if self.browser is None:
             from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
             from PySide6.QtWebEngineWidgets import QWebEngineView
+
+            class UploadPage(QWebEnginePage):
+                def __init__(self, profile, parent=None):
+                    super().__init__(profile, parent)
+                    self._queued_files = []
+
+                def queue_files(self, paths):
+                    self._queued_files = [str(Path(path).resolve()) for path in paths]
+
+                def clear_queued_files(self):
+                    self._queued_files = []
+
+                def chooseFiles(self, mode, old_files, accepted_mime_types):
+                    if self._queued_files:
+                        selected, self._queued_files = self._queued_files, []
+                        return selected
+                    return super().chooseFiles(mode, old_files, accepted_mime_types)
+
             self.profile = QWebEngineProfile("company-platform", self)
             folder = DATA_ROOT / "runtime" / "browser"
             self.profile.setPersistentStoragePath(str(folder / "storage"))
             self.profile.setCachePath(str(folder / "cache"))
             self.browser = QWebEngineView(self)
-            self.browser.setPage(QWebEnginePage(self.profile, self.browser))
+            self.upload_page = UploadPage(self.profile, self.browser)
+            self.browser.setPage(self.upload_page)
             self.browser.loadFinished.connect(lambda ok: self.status.setText("页面已加载 · 登录账号尚未自动识别" if ok else "网页加载失败，请检查内网连接与平台地址"))
             self.browser.urlChanged.connect(lambda target: self.address.setText(target.toDisplayString()))
             self.empty.hide()
