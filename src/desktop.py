@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
     QStackedWidget, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QProgressBar,
+    QComboBox, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QSpinBox,
 )
 
 from src.batch import LABELS, read_input, save_json, export_report
@@ -146,12 +146,36 @@ class MainWindow(QMainWindow):
         self.filter.addItem('规则已更新', 'stale')
         filters.addWidget(self.filter)
         self.search = QLineEdit()
-        self.search.setPlaceholderText('搜索剧名 / 视频 ID')
+        self.search.setPlaceholderText('搜索剧名 / 视频 ID / 原视频链接')
         filters.addWidget(self.search)
         box.addLayout(filters)
+        selection_toolbar = QHBoxLayout()
+        self.select_all_button = button('全选', lambda: self.check_visible(True))
+        self.invert_button = button('反选', self.invert_visible_selection)
+        self.clear_selection_button = button('清除选择', self.clear_selection)
+        self.remove_selection_button = button('移除选中', self.remove_checked_rows)
+        for control in (
+            self.select_all_button,
+            self.invert_button,
+            self.clear_selection_button,
+            self.remove_selection_button,
+        ):
+            selection_toolbar.addWidget(control)
+        selection_toolbar.addWidget(label('前 N 条'))
+        self.selection_count = QSpinBox()
+        self.selection_count.setRange(1, 100000)
+        self.selection_count.setValue(10)
+        self.selection_count.setFixedWidth(76)
+        selection_toolbar.addWidget(self.selection_count)
+        self.select_first_button = button('选择前 N 条', self.select_first_rows)
+        self.select_to_end_button = button('选择至末尾', self.select_from_current_to_end)
+        self.select_first_button.setToolTip('在当前筛选结果中选择前 N 条')
+        self.select_to_end_button.setToolTip('从当前聚焦行开始，选择到当前筛选结果末尾')
+        selection_toolbar.addWidget(self.select_first_button)
+        selection_toolbar.addWidget(self.select_to_end_button)
+        selection_toolbar.addStretch()
+        box.addLayout(selection_toolbar)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(button('全选当前', lambda: self.check_visible(True)))
-        toolbar.addWidget(button('清空勾选', lambda: self.check_visible(False)))
         self.selection_label = label('已勾选 0 条')
         toolbar.addWidget(self.selection_label, 1)
         self.mode = QComboBox()
@@ -162,8 +186,11 @@ class MainWindow(QMainWindow):
         self.start_button = button('处理勾选素材', self.start_or_pause, True)
         toolbar.addWidget(self.start_button)
         box.addLayout(toolbar)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(['选择 / 视频 ID', '素材', '下载状态', '检测状态', '命中项 / 提示', '人工备注'])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels([
+            '勾选', '编号', '视频 ID', '素材', '原视频链接',
+            '下载状态', '检测状态', '命中项 / 提示', '人工备注',
+        ])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -171,7 +198,7 @@ class MainWindow(QMainWindow):
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(55)
-        for index, width in enumerate([190, 158, 90, 138, 150, 130]):
+        for index, width in enumerate([78, 62, 190, 158, 300, 90, 138, 150, 130]):
             self.table.setColumnWidth(index, width)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_selected())
@@ -242,10 +269,18 @@ class MainWindow(QMainWindow):
         if cell.column() != 0:
             return
         id_ = cell.data(Qt.UserRole)
-        if cell.checkState() == Qt.Checked:
+        is_checked = cell.checkState() == Qt.Checked
+        if is_checked:
             self.checked.add(id_)
         else:
             self.checked.discard(id_)
+        self.table.blockSignals(True)
+        cell.setText('已选择' if is_checked else '选择')
+        cell.setForeground(QColor('#0F766E' if is_checked else '#64727B'))
+        font = cell.font()
+        font.setBold(is_checked)
+        cell.setFont(font)
+        self.table.blockSignals(False)
         self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
 
     def check_visible(self, enabled):
@@ -256,6 +291,72 @@ class MainWindow(QMainWindow):
                 if enabled:
                     self.checked.add(row['video_id'])
         self.refresh_table()
+
+    def visible_selectable_rows(self):
+        return [
+            index for index, row in enumerate(self.rows)
+            if not self.table.isRowHidden(index) and not row['input_error']
+        ]
+
+    def clear_selection(self):
+        self.checked.clear()
+        self.refresh_table()
+
+    def invert_visible_selection(self):
+        for index in self.visible_selectable_rows():
+            video_id = self.rows[index]['video_id']
+            if video_id in self.checked:
+                self.checked.remove(video_id)
+            else:
+                self.checked.add(video_id)
+        self.refresh_table()
+
+    def _replace_visible_selection(self, selected_rows):
+        visible_rows = self.visible_selectable_rows()
+        self.checked.difference_update(self.rows[index]['video_id'] for index in visible_rows)
+        self.checked.update(self.rows[index]['video_id'] for index in selected_rows)
+        self.refresh_table()
+
+    def select_first_rows(self):
+        visible_rows = self.visible_selectable_rows()
+        self._replace_visible_selection(visible_rows[:self.selection_count.value()])
+
+    def select_from_current_to_end(self):
+        visible_rows = self.visible_selectable_rows()
+        if not visible_rows:
+            return
+        current = self.table.currentRow()
+        start = visible_rows.index(current) if current in visible_rows else 0
+        self._replace_visible_selection(visible_rows[start:])
+
+    def remove_checked_rows(self):
+        if self.is_running() or not self.checked:
+            return
+        removed = {row['video_id'] for row in self.rows if row['video_id'] in self.checked}
+        self.rows = [row for row in self.rows if row['video_id'] not in removed]
+        self.checked.clear()
+        self.persist_candidate_rows()
+        self.refresh_table()
+        if self.folder:
+            self.batch_name.setText(
+                f'当前批次：{self.folder.name} · {len(self.rows)} 条素材 · 导入不自动执行'
+            )
+        self.statusBar().showMessage(f'已从候选区移除 {len(removed)} 条素材，本地视频文件未删除。')
+
+    def persist_candidate_rows(self):
+        if not self.folder or not self.input_path:
+            return
+        save_json(self.input_path, self.rows)
+        from src.batch import file_hash
+        state_path = self.folder / 'results.json'
+        state = read_json(state_path, {})
+        state.update({
+            'input_path': str(self.input_path),
+            'input_sha256': file_hash(self.input_path),
+            'input_rows': self.rows,
+            'records': self.records,
+        })
+        save_json(state_path, state)
 
     def preview_selected(self):
         ids = self.focused_ids()
@@ -327,7 +428,12 @@ class MainWindow(QMainWindow):
         return self.process is not None and self.process.state() != QProcess.NotRunning
 
     def set_busy(self, busy):
-        for control in [self.import_button, self.open_button, self.retry_button, self.recheck_button, self.mode, self.link_button, self.local_button]:
+        for control in [
+            self.import_button, self.open_button, self.retry_button, self.recheck_button,
+            self.mode, self.link_button, self.local_button, self.select_all_button,
+            self.invert_button, self.clear_selection_button, self.remove_selection_button,
+            self.selection_count, self.select_first_button, self.select_to_end_button,
+        ]:
             control.setEnabled(not busy)
         if hasattr(self, "settings"):
             self.settings.setEnabled(not busy)
@@ -370,8 +476,20 @@ class MainWindow(QMainWindow):
             if id_ == self.current_id:
                 label = self.current_stage + "…"
             hints = "、".join(dict.fromkeys(h["match"] for h in record.get("hits", []))) or row["input_error"] or record.get("reason", "")
-            cells = [id_, str(row["source"]["剧名"] or ""), record.get("download", "待下载"), label,
-                     hints, self.notes.get(id_, {}).get("note", "")]
+            source = row.get('source', {})
+            original_url = str(row.get('url') or source.get('原始链接') or '')
+            is_checked = id_ in self.checked
+            cells = [
+                '不可选' if row['input_error'] else ('已选择' if is_checked else '选择'),
+                str(index + 1),
+                id_,
+                str(source.get("剧名") or ""),
+                original_url,
+                record.get("download", "待下载"),
+                label,
+                hints,
+                self.notes.get(id_, {}).get("note", ""),
+            ]
             for col, value in enumerate(cells):
                 cell = self.table.item(index, col)
                 if cell is None:
@@ -384,10 +502,17 @@ class MainWindow(QMainWindow):
                     cell.setFlags(cell.flags() | Qt.ItemIsUserCheckable)
                     if row['input_error']:
                         cell.setFlags(cell.flags() & ~Qt.ItemIsUserCheckable)
-                    cell.setCheckState(Qt.Checked if id_ in self.checked else Qt.Unchecked)
+                    cell.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
                     cell.setData(Qt.UserRole, id_)
                     cell.setData(Qt.UserRole + 1, status)
-                if col == 3:
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    cell.setForeground(QColor('#0F766E' if is_checked else '#64727B'))
+                    font = cell.font()
+                    font.setBold(is_checked)
+                    cell.setFont(font)
+                if col in (1, 2):
+                    cell.setTextAlignment(Qt.AlignCenter)
+                if col == 6:
                     cell.setForeground(QColor({"blocked": "#b94035", "sample_clear": "#116d62", "pending": "#64727b"}.get(status, "#986016")))
             if id_ in selected:
                 from PySide6.QtCore import QItemSelectionModel
@@ -407,7 +532,10 @@ class MainWindow(QMainWindow):
             if not cell:
                 continue
             matches = state == "all" or cell.data(Qt.UserRole + 1) == state
-            text = cell.text() + " " + self.table.item(index, 1).text()
+            text = " ".join(
+                self.table.item(index, column).text()
+                for column in (2, 3, 4)
+            )
             self.table.setRowHidden(index, not (matches and query in text.casefold()))
 
     def import_excel(self):

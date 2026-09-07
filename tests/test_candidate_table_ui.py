@@ -1,0 +1,114 @@
+import os
+import unittest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+
+from src.desktop import MainWindow
+
+
+class CandidateTableUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.window = MainWindow(restore=False)
+        self.window.rows = [{
+            "video_id": "7681538825608236331",
+            "url": "https://www.douyin.com/video/7681538825608236331",
+            "input_error": "",
+            "source": {
+                "剧名": "婚房门后的秘密",
+                "原始链接": "https://www.douyin.com/video/7681538825608236331",
+            },
+        }]
+        self.window.checked = {"7681538825608236331"}
+        self.window.refresh_table()
+
+    def tearDown(self):
+        self.window.close()
+        self.window.deleteLater()
+
+    def test_candidate_table_shows_selection_number_id_and_original_url(self):
+        headers = [
+            self.window.table.horizontalHeaderItem(index).text()
+            for index in range(self.window.table.columnCount())
+        ]
+
+        self.assertEqual(headers[:5], ["勾选", "编号", "视频 ID", "素材", "原视频链接"])
+        self.assertEqual(self.window.table.item(0, 0).text(), "已选择")
+        self.assertEqual(self.window.table.item(0, 0).checkState(), Qt.Checked)
+        self.assertEqual(self.window.table.item(0, 1).text(), "1")
+        self.assertEqual(self.window.table.item(0, 2).text(), "7681538825608236331")
+        self.assertEqual(
+            self.window.table.item(0, 4).text(),
+            "https://www.douyin.com/video/7681538825608236331",
+        )
+
+    def test_unchecking_updates_the_visible_selection_label(self):
+        self.window.table.item(0, 0).setCheckState(Qt.Unchecked)
+        self.app.processEvents()
+
+        self.assertEqual(self.window.table.item(0, 0).text(), "选择")
+        self.assertNotIn("7681538825608236331", self.window.checked)
+        self.assertIn("已勾选 0 条", self.window.selection_label.text())
+
+    def test_original_url_is_searchable(self):
+        self.window.search.setText("douyin.com/video/768153")
+        self.app.processEvents()
+
+        self.assertFalse(self.window.table.isRowHidden(0))
+
+    def test_batch_selection_supports_first_n_invert_and_to_end(self):
+        for offset in range(1, 5):
+            video_id = str(7681538825608236331 + offset)
+            url = f"https://www.douyin.com/video/{video_id}"
+            self.window.rows.append({
+                "video_id": video_id,
+                "url": url,
+                "input_error": "",
+                "source": {"剧名": "婚房门后的秘密", "原始链接": url},
+            })
+        self.window.checked.clear()
+        self.window.refresh_table()
+
+        self.window.selection_count.setValue(2)
+        self.window.select_first_rows()
+        self.assertEqual(self.window.checked, {
+            "7681538825608236331",
+            "7681538825608236332",
+        })
+
+        self.window.invert_visible_selection()
+        self.assertEqual(self.window.checked, {
+            "7681538825608236333",
+            "7681538825608236334",
+            "7681538825608236335",
+        })
+
+        self.window.table.setCurrentCell(3, 2)
+        self.window.select_from_current_to_end()
+        self.assertEqual(self.window.checked, {
+            "7681538825608236334",
+            "7681538825608236335",
+        })
+
+    def test_remove_checked_materials_keeps_unselected_rows(self):
+        second = {
+            "video_id": "7681538825608236332",
+            "url": "https://www.douyin.com/video/7681538825608236332",
+            "input_error": "",
+            "source": {"剧名": "婚房门后的秘密", "原始链接": ""},
+        }
+        self.window.rows.append(second)
+        self.window.remove_checked_rows()
+
+        self.assertEqual([row["video_id"] for row in self.window.rows], [second["video_id"]])
+        self.assertEqual(self.window.checked, set())
+
+
+if __name__ == "__main__":
+    unittest.main()
