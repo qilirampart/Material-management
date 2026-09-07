@@ -4,6 +4,7 @@ import re
 import os
 import shutil
 import json
+import filecmp
 from datetime import date
 from pathlib import Path
 
@@ -109,7 +110,7 @@ def stage_upload_batch(batch, staging_root):
             raise FileNotFoundError(f"待上传视频不存在：{source}")
         target = target_folder / item["upload_name"]
         if target.exists():
-            if target.stat().st_size != source.stat().st_size:
+            if not target.is_file() or not filecmp.cmp(source, target, shallow=False):
                 raise FileExistsError(f"上传暂存文件已存在且内容不一致：{target}")
         else:
             try:
@@ -125,7 +126,22 @@ def load_upload_preferences(path):
         data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         data = {}
-    dramas = data.get("dramas") if isinstance(data.get("dramas"), dict) else {}
+    stored_dramas = data.get("dramas") if isinstance(data.get("dramas"), dict) else {}
+    dramas = {}
+    for name, stored in stored_dramas.items():
+        if not isinstance(stored, dict):
+            continue
+        ids = stored.get("ids") if isinstance(stored.get("ids"), dict) else {}
+        ids = {
+            str(platform_id): {"director": str(details.get("director", "")).strip()}
+            for platform_id, details in ids.items()
+            if str(platform_id).strip() and isinstance(details, dict)
+        }
+        legacy_id = str(stored.get("platform_id", "")).strip()
+        if legacy_id:
+            ids.setdefault(legacy_id, {"director": str(stored.get("director", "")).strip()})
+        last_id = str(stored.get("last_id", legacy_id)).strip()
+        dramas[str(name)] = {"ids": ids, "last_id": last_id if last_id in ids else next(iter(ids), "")}
     return {
         "dramas": dramas,
         "uploader_initials": str(data.get("uploader_initials", "")).strip(),
@@ -136,10 +152,10 @@ def remember_upload_preferences(path, *, drama_name, drama_platform_id, director
     path = Path(path)
     preferences = load_upload_preferences(path)
     name = str(drama_name).strip()
-    preferences["dramas"][name] = {
-        "platform_id": str(drama_platform_id).strip(),
-        "director": str(director).strip(),
-    }
+    platform_id = str(drama_platform_id).strip()
+    drama = preferences["dramas"].setdefault(name, {"ids": {}, "last_id": ""})
+    drama["ids"][platform_id] = {"director": str(director).strip()}
+    drama["last_id"] = platform_id
     preferences["uploader_initials"] = str(uploader_initials).strip()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")

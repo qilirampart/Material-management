@@ -96,6 +96,20 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(staged_path.read_bytes(), b"video-content")
             self.assertEqual(staged_path.name, batch["items"][0]["upload_name"])
 
+    def test_staging_rejects_same_size_stale_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            source.write_bytes(b"right")
+            name = "upload.mp4"
+            target = root / "staging" / "batch-01" / name
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"wrong")
+            batch = {"index": 1, "items": [{"original_path": str(source), "upload_name": name}]}
+
+            with self.assertRaisesRegex(FileExistsError, "内容不一致"):
+                stage_upload_batch(batch, root / "staging")
+
     def test_confirmed_drama_mapping_and_uploader_are_remembered_locally(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "upload-preferences.json"
@@ -107,10 +121,19 @@ class UploadPreparationTests(unittest.TestCase):
                 director="王俨",
                 uploader_initials="ZYY",
             )
+            remember_upload_preferences(
+                path,
+                drama_name="婚房门后的秘密",
+                drama_platform_id="87654",
+                director="另一位编导",
+                uploader_initials="ZYY",
+            )
             preferences = load_upload_preferences(path)
 
-            self.assertEqual(preferences["dramas"]["婚房门后的秘密"]["platform_id"], "98765")
-            self.assertEqual(preferences["dramas"]["婚房门后的秘密"]["director"], "王俨")
+            drama = preferences["dramas"]["婚房门后的秘密"]
+            self.assertEqual(set(drama["ids"]), {"98765", "87654"})
+            self.assertEqual(drama["ids"]["98765"]["director"], "王俨")
+            self.assertEqual(drama["last_id"], "87654")
             self.assertEqual(preferences["uploader_initials"], "ZYY")
 
 

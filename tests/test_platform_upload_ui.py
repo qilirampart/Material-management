@@ -6,6 +6,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 
 from src.desktop_widgets import PlatformPage
 
@@ -32,9 +33,13 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertEqual(page.drama_name.text(), "婚房门后的秘密")
             self.assertIn("1 条可上传", page.material_summary.text())
             page.director.setText("王俨")
-            page.drama_id.setText("98765")
+            page.drama_id.setEditText("98765")
             page.uploader_initials.setText("ZYY")
             page.prepare_upload()
+            for _ in range(100):
+                if page.upload_batches:
+                    break
+                QTest.qWait(10)
             self.assertEqual(len(page.upload_batches), 1)
             self.assertTrue(Path(page.upload_batches[0]["items"][0]["upload_path"]).is_file())
             self.assertTrue(page.fill_button.isEnabled())

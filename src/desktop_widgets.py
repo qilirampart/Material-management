@@ -24,7 +24,7 @@ from src.upload import (
     suggested_drama_name,
 )
 from src.vision import PHRASES, load_profile
-from src.ui_design import card, label
+from src.ui_design import Background, card, label
 
 
 def button(text, callback, primary=False):
@@ -334,6 +334,7 @@ class PlatformPage(QWidget):
         self.materials = []
         self.batch_folder = None
         self.upload_batches = []
+        self.staging_task = None
         self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         layout = QVBoxLayout(self)
@@ -378,8 +379,10 @@ class PlatformPage(QWidget):
         self.director.setPlaceholderText('选择或填写编导')
         self.drama_name = QLineEdit()
         self.drama_name.setPlaceholderText('从导入表格的剧名预填')
-        self.drama_id = QLineEdit()
-        self.drama_id.setPlaceholderText('平台建议短剧 ID')
+        self.drama_id = QComboBox()
+        self.drama_id.setEditable(True)
+        self.drama_id.lineEdit().setPlaceholderText('平台建议短剧 ID')
+        self.drama_id.currentTextChanged.connect(self.apply_remembered_director)
         self.uploader_initials = QLineEdit()
         self.uploader_initials.setPlaceholderText('例如 ZYY')
         self.uploader_initials.setText(self.upload_preferences['uploader_initials'])
@@ -421,8 +424,12 @@ class PlatformPage(QWidget):
         if proposed:
             self.drama_name.setText(proposed)
             remembered = self.upload_preferences['dramas'].get(proposed, {})
-            self.drama_id.setText(remembered.get('platform_id', ''))
-            self.director.setText(remembered.get('director', ''))
+            self.drama_id.blockSignals(True)
+            self.drama_id.clear()
+            self.drama_id.addItems(remembered.get('ids', {}).keys())
+            self.drama_id.setCurrentText(remembered.get('last_id', ''))
+            self.drama_id.blockSignals(False)
+            self.apply_remembered_director(self.drama_id.currentText())
         else:
             self.drama_name.clear()
             self.drama_id.clear()
@@ -435,16 +442,15 @@ class PlatformPage(QWidget):
             plan = build_upload_plan(
                 self.materials,
                 drama_name=self.drama_name.text(),
-                drama_platform_id=self.drama_id.text(),
+                drama_platform_id=self.drama_id.currentText(),
                 director=self.director.text(),
                 uploader_initials=self.uploader_initials.text(),
             )
             staging = self.batch_folder / 'upload-staging'
-            self.upload_batches = [stage_upload_batch(batch, staging) for batch in plan]
             remember_upload_preferences(
                 self.preferences_path,
                 drama_name=self.drama_name.text(),
-                drama_platform_id=self.drama_id.text(),
+                drama_platform_id=self.drama_id.currentText(),
                 director=self.director.text(),
                 uploader_initials=self.uploader_initials.text(),
             )
@@ -453,6 +459,22 @@ class PlatformPage(QWidget):
             self.preview.setText(str(exc))
             self.fill_button.setEnabled(False)
             return
+        self.prepare_button.setEnabled(False)
+        self.fill_button.setEnabled(False)
+        self.preview.setText('正在后台生成上传暂存文件…')
+        self.staging_task = Background(lambda: [stage_upload_batch(batch, staging) for batch in plan], self)
+        self.staging_task.result.connect(self.staging_ready)
+        self.staging_task.failed.connect(self.staging_failed)
+        self.staging_task.start()
+
+    def apply_remembered_director(self, platform_id):
+        drama = self.upload_preferences['dramas'].get(self.drama_name.text().strip(), {})
+        remembered = drama.get('ids', {}).get(platform_id, {})
+        if remembered.get('director'):
+            self.director.setText(remembered['director'])
+
+    def staging_ready(self, batches):
+        self.upload_batches = batches
         self.batch_selector.clear()
         for batch in self.upload_batches:
             self.batch_selector.addItem(f"第 {batch['index']} 批 · {len(batch['items'])} 条", batch['index'] - 1)
@@ -460,6 +482,13 @@ class PlatformPage(QWidget):
         self.fill_button.setEnabled(bool(self.upload_batches))
         first = self.upload_batches[0]['items'][0]['upload_name'] if self.upload_batches else ''
         self.preview.setText(f'已生成 {len(self.upload_batches)} 个批次\n文件名示例：{first}')
+        self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
+
+    def staging_failed(self, message):
+        self.upload_batches = []
+        self.preview.setText(message)
+        self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
+        self.fill_button.setEnabled(False)
 
     def fill_platform_form(self):
         if not self.browser:
@@ -481,7 +510,7 @@ class PlatformPage(QWidget):
         script = build_upload_form_script(
             director=self.director.text(),
             drama_name=self.drama_name.text(),
-            drama_platform_id=self.drama_id.text(),
+            drama_platform_id=self.drama_id.currentText(),
             file_count=len(batch['items']),
         )
         self.browser.page().runJavaScript(script, lambda result: self._platform_fill_finished(batch, attempt, result))
