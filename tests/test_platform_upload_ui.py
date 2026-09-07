@@ -159,7 +159,13 @@ class PlatformUploadUiTests(unittest.TestCase):
     @patch("src.desktop_widgets.QMessageBox.information")
     @patch(
         "src.desktop_widgets.set_edge_file_input",
-        return_value={"input_count": 1, "plugin_count": 1, "names": ["upload.mp4"]},
+        return_value={
+            "input_count": 1,
+            "plugin_count": 1,
+            "preview_count": 1,
+            "video_preview_count": 1,
+            "names": ["upload.mp4"],
+        },
     )
     @patch(
         "src.desktop_widgets.evaluate_edge_page",
@@ -187,7 +193,7 @@ class PlatformUploadUiTests(unittest.TestCase):
 
             message.assert_not_called()
             set_files.assert_called_once()
-            self.assertIn("平台上传组件已接收 1 个文件", page.status.text())
+            self.assertIn("平台已接收 1 个文件并显示 1 个视频预览", page.status.text())
             self.assertIn("upload.mp4", page.status.text())
             page.deleteLater()
 

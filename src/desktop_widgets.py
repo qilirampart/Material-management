@@ -17,6 +17,7 @@ from src.paths import RESOURCE_ROOT, DATA_ROOT
 from src.browser_session import configure_persistent_profile, platform_browser_root
 from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page, set_edge_file_input
 from src.edge_session import (
+    edge_window_bounds,
     find_embeddable_edge_window,
     focus_edge_window,
     launch_embedded_edge,
@@ -595,12 +596,14 @@ class PlatformPage(QWidget):
 
     def _fit_edge_session(self):
         port = int(self.config.get('edge_debug_port', 9222))
+        expected_bounds = edge_window_bounds(self.edge_window_handle)
         self.edge_zoom_task = Background(
             lambda: fit_new_edge_page(
                 self.edge_previous_targets,
                 self.address.text().strip(),
                 port,
                 0.67,
+                expected_bounds=expected_bounds,
             ),
             self,
         )
@@ -915,13 +918,14 @@ class PlatformPage(QWidget):
         self.fill_button.setEnabled(True)
         result = result if isinstance(result, dict) else {}
         count = int(result.get('plugin_count') or result.get('input_count') or 0)
+        preview_count = int(result.get('video_preview_count') or result.get('preview_count') or count)
         names = [str(name) for name in result.get('names', [])]
         visible_name = names[0] if names else '未返回文件名'
         more = f' 等 {count} 个文件' if count > 1 else ''
-        self.status.setText(f'平台上传组件已接收 {count} 个文件：{visible_name}{more}')
+        self.status.setText(f'平台已接收 {count} 个文件并显示 {preview_count} 个视频预览：{visible_name}{more}')
         self.preview.setText(
             self.preview.text()
-            + f'\n平台已接收：{visible_name}{more}；未保存草稿，未提交审核。'
+            + f'\n平台已显示 {preview_count} 个视频预览：{visible_name}{more}；未保存草稿，未提交审核。'
         )
 
     def _edge_files_failed(self, message):

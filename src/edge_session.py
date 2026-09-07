@@ -135,6 +135,20 @@ def find_embeddable_edge_window(previous: set[int]) -> int | None:
     return (preferred or candidates)[-1][0] if candidates else None
 
 
+def edge_window_bounds(handle: int) -> tuple[int, int, int, int] | None:
+    if os.name != "nt" or not handle:
+        return None
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(handle, ctypes.byref(rect)):
+        return None
+    return (
+        int(rect.left),
+        int(rect.top),
+        int(rect.right - rect.left),
+        int(rect.bottom - rect.top),
+    )
+
+
 def prepare_edge_window_for_embedding(handle: int) -> None:
     if os.name != "nt":
         return

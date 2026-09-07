@@ -31,6 +31,8 @@ class EdgeCdpTests(unittest.TestCase):
             json.dumps({"id": 3, "result": {"result": {"value": {
                 "inputCount": 2,
                 "pluginCount": 2,
+                "previewCount": 2,
+                "videoPreviewCount": 2,
                 "names": ["a.mp4", "b.mp4"],
             }}}}),
         ]
@@ -40,10 +42,31 @@ class EdgeCdpTests(unittest.TestCase):
 
         self.assertEqual(result["input_count"], 2)
         self.assertEqual(result["plugin_count"], 2)
+        self.assertEqual(result["preview_count"], 2)
+        self.assertEqual(result["video_preview_count"], 2)
         self.assertEqual(result["names"], ["a.mp4", "b.mp4"])
         payloads = [json.loads(call.args[0]) for call in socket.send.call_args_list]
         self.assertEqual(payloads[1]["method"], "DOM.setFileInputFiles")
         self.assertEqual(payloads[1]["params"]["files"], ["a.mp4", "b.mp4"])
+
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_rejects_file_selection_without_video_preview(self, connect):
+        socket = MagicMock()
+        socket.recv.side_effect = [
+            json.dumps({"id": 1, "result": {"result": {"objectId": "input-1"}}}),
+            json.dumps({"id": 2, "result": {}}),
+            json.dumps({"id": 3, "result": {"result": {"value": {
+                "inputCount": 1,
+                "pluginCount": 1,
+                "previewCount": 0,
+                "videoPreviewCount": 0,
+                "names": ["a.mp4"],
+            }}}}),
+        ]
+        connect.return_value = socket
+
+        with self.assertRaisesRegex(RuntimeError, "文件预览"):
+            set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4"])
 
     @patch("src.edge_cdp.edge_targets", return_value=[{"id": "old"}, {"id": "new"}])
     def test_target_snapshot_contains_ids(self, _targets):
@@ -67,6 +90,30 @@ class EdgeCdpTests(unittest.TestCase):
         self.assertEqual(payload["method"], "Runtime.evaluate")
         self.assertIn("0.67", payload["params"]["expression"])
         socket.close.assert_called_once()
+
+    @patch("src.edge_cdp._target_window_bounds")
+    @patch("src.edge_cdp.websocket.create_connection")
+    @patch("src.edge_cdp.edge_targets")
+    def test_fits_the_page_belonging_to_the_embedded_window(self, targets, connect, bounds):
+        targets.return_value = [
+            {"id": "other", "type": "page", "url": "https://market.wuread.cn/market-admin/", "webSocketDebuggerUrl": "ws://other"},
+            {"id": "embedded", "type": "page", "url": "https://market.wuread.cn/market-admin/", "webSocketDebuggerUrl": "ws://embedded"},
+        ]
+        bounds.side_effect = lambda target: {
+            "other": (20, 20, 1200, 800),
+            "embedded": (244, 208, 760, 465),
+        }[target["id"]]
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({"id": 1, "result": {}})
+        connect.return_value = socket
+
+        result = fit_new_edge_page(
+            set(),
+            "https://market.wuread.cn/market-admin/",
+            expected_bounds=(242, 207, 758, 464),
+        )
+
+        self.assertEqual(result, "ws://embedded")
 
     @patch("src.edge_cdp.time.sleep")
     @patch("src.edge_cdp.websocket.create_connection")
