@@ -1,0 +1,7 @@
+{
+  "model_config_path": "E:/点众/YouTube字幕核验助手工作区/runtime/api_config.json",
+  "model_profile_id": "",
+  "parser_config_path": "E:/点众/自动化工具/侵权巡检助手工作区/源码/runtime/api_config.json",
+  "downloader_config_path": "E:/点众/自动化工具/侵权巡检助手工作区/源码/runtime/downloader_config.json",
+  "logo_reference": "assets/references/hongguo_logo.png"
+}

@@ -1,0 +1,387 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QPlainTextEdit,
+    QFormLayout, QFileDialog, QComboBox, QGroupBox, QMessageBox, QSlider, QSplitter,
+    QDialog, QScrollArea, QStackedWidget, QListWidget, QListWidgetItem,
+)
+
+from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.vision import PHRASES, load_profile
+from src.ui_design import card, label
+
+
+def button(text, callback, primary=False):
+    widget = QPushButton(text)
+    if primary:
+        widget.setObjectName("primary")
+    widget.clicked.connect(callback)
+    return widget
+
+
+def title(text):
+    label = QLabel(text)
+    label.setObjectName("heading")
+    return label
+
+
+def local_open(path):
+    path = Path(path)
+    if path.exists():
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+
+
+class SettingsPage(QWidget):
+    saved = Signal(dict)
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = dict(config)
+        layout = QVBoxLayout(self)
+        layout.addWidget(title("设置"))
+        layout.addWidget(QLabel("配置在本机保存；检测规则更新后，已有素材需重新检测。"))
+        form = QFormLayout()
+        self.fields = {}
+        items = [("output_root", "素材保存目录", True), ("model_config_path", "语言模型配置文件", False),
+                 ("parser_config_path", "抖音解析配置文件", False), ("downloader_config_path", "下载参数文件", False),
+                 ("logo_reference", "红果 logo 参考图", False)]
+        for key, label, is_folder in items:
+            value = self.config.get(key, "")
+            if key == "logo_reference" and not Path(value).is_absolute():
+                value = str(RESOURCE_ROOT / value)
+            edit = QLineEdit(value)
+            edit.setAccessibleName(label)
+            self.fields[key] = edit
+            row = QHBoxLayout()
+            row.addWidget(edit)
+            row.addWidget(button("浏览…", lambda checked=False, e=edit, d=is_folder: self.browse(e, d)))
+            form.addRow(label, row)
+        self.profiles = QComboBox()
+        form.addRow("检测模型", self.profiles)
+        form.addRow("", button("刷新模型列表", self.refresh_profiles))
+        self.phrases = QPlainTextEdit("\n".join(config.get("phrases", PHRASES)))
+        self.phrases.setMaximumHeight(110)
+        self.phrases.setAccessibleName("禁用文字，每行一个")
+        form.addRow("禁用文字（每行一个）", self.phrases)
+        form.addRow("抽帧规则", QLabel("固定首帧 + 1 秒 + 2 秒；短视频自动调整"))
+        self.website = QLineEdit(config.get("platform_url", ""))
+        self.website.setPlaceholderText("公司平台地址，后续对齐；填写后可手动浏览")
+        form.addRow("公司平台", self.website)
+        layout.addLayout(form)
+        self.message = QLabel("")
+        self.message.setWordWrap(True)
+        layout.addWidget(self.message)
+        layout.addWidget(button("保存设置", self.save, True), alignment=Qt.AlignLeft)
+        layout.addStretch()
+        self.refresh_profiles()
+
+    def browse(self, edit, directory):
+        path = QFileDialog.getExistingDirectory(self, "选择目录", edit.text()) if directory else QFileDialog.getOpenFileName(self, "选择文件", edit.text())[0]
+        if path:
+            edit.setText(path)
+            if edit is self.fields["model_config_path"]:
+                self.refresh_profiles()
+
+    def refresh_profiles(self):
+        self.profiles.clear()
+        self.profiles.addItem("自动选择第一个可用模型", "")
+        try:
+            data = json.loads(Path(self.fields["model_config_path"].text()).read_text(encoding="utf-8-sig"))
+            for profile in data.get("llm", {}).get("profiles", []):
+                if profile.get("enabled", True):
+                    self.profiles.addItem(f"{profile.get('name', '')} · {profile.get('model', '')}", profile.get("id", ""))
+            index = self.profiles.findData(self.config.get("model_profile_id", ""))
+            self.profiles.setCurrentIndex(max(0, index))
+            self.message.setText("配置文件已读取。密钥不在界面或日志中展示。")
+        except (OSError, ValueError, TypeError):
+            self.message.setText("尚未读取到模型配置；请指定现有项目的 api_config.json。")
+
+    def save(self):
+        config = dict(self.config)
+        config.update({key: edit.text().strip() for key, edit in self.fields.items()})
+        config["model_profile_id"] = self.profiles.currentData()
+        config["phrases"] = list(dict.fromkeys(line.strip() for line in self.phrases.toPlainText().splitlines() if line.strip()))
+        config["platform_url"] = self.website.text().strip()
+        if not config["phrases"] or not config["output_root"]:
+            QMessageBox.warning(self, "设置不完整", "请填写保存目录和至少一个检测短语。")
+            return
+        if config["platform_url"]:
+            url = QUrl(config["platform_url"])
+            if not url.isValid() or url.scheme() not in ("https", "http") or not url.host() or url.userInfo():
+                QMessageBox.warning(self, "网址无效", "请填写不含账号密码的 HTTP/HTTPS 平台地址。")
+                return
+        self.config = config
+        self.saved.emit(config)
+        self.message.setText("设置已保存。规则变化后可在任务页选择素材并重新检测。")
+
+
+class ReviewPage(QWidget):
+    note_saved = Signal(str, str, bool)
+    recheck = Signal(str)
+    picked = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.video_id = ""
+        self.path = ""
+        self.blocked = False
+        layout = QVBoxLayout(self)
+        self.heading = title("检测复核")
+        layout.addWidget(self.heading)
+        self.caption = QLabel("在任务列表中双击一条素材，查看视频和检测证据。")
+        layout.addWidget(self.caption)
+        self.splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(self.splitter, 1)
+        listing, listing_box = card('复核素材')
+        self.materials = QListWidget()
+        self.materials.setStyleSheet('QListWidget { border:0; background:white; } QListWidget::item { padding:15px 5px; border-bottom:1px solid #EDF1F2; } QListWidget::item:selected { background:#E5F3EF; color:#145951; }')
+        self.materials.itemClicked.connect(lambda item: self.picked.emit(item.data(Qt.UserRole)))
+        listing_box.addWidget(self.materials)
+        self.splitter.addWidget(listing)
+        left = QWidget()
+        left.setObjectName('card')
+        video_layout = QVBoxLayout(left)
+        video_layout.setContentsMargins(16, 16, 16, 16)
+        video_layout.addWidget(label('原始视频', 'section'))
+        self.video = QVideoWidget()
+        self.video.setMinimumSize(220, 240)
+        self.poster = QLabel("尚未选择视频")
+        self.poster.setAlignment(Qt.AlignCenter)
+        self.poster.setMinimumSize(220, 200)
+        self.poster.setStyleSheet("background: #182027; color: white;")
+        self.poster_pixmap = QPixmap()
+        self.video_stack = QStackedWidget()
+        self.video_stack.addWidget(self.poster)
+        self.video_stack.addWidget(self.video)
+        video_layout.addWidget(self.video_stack, 1)
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video)
+        self.player.playbackStateChanged.connect(self.playback_changed)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setAccessibleName("视频播放进度")
+        self.slider.sliderMoved.connect(self.player.setPosition)
+        self.player.durationChanged.connect(lambda duration: self.slider.setRange(0, duration))
+        self.player.positionChanged.connect(lambda value: self.slider.setValue(value) if not self.slider.isSliderDown() else None)
+        video_layout.addWidget(self.slider)
+        self.time = QLabel("00:00 / 00:00")
+        self.player.positionChanged.connect(self.update_time)
+        row = QHBoxLayout()
+        self.play_button = button("播放 / 暂停", self.toggle_play)
+        row.addWidget(self.play_button)
+        row.addWidget(self.time)
+        row.addStretch()
+        video_layout.addLayout(row)
+        video_layout.addWidget(label('片头抽帧', 'section'))
+        self.frames_layout = QHBoxLayout()
+        video_layout.addLayout(self.frames_layout)
+        self.splitter.addWidget(left)
+        right = QWidget()
+        right.setObjectName("card")
+        detail = QVBoxLayout(right)
+        detail.setContentsMargins(16, 16, 16, 16)
+        detail.addWidget(label('检测结论', 'section'))
+        self.result = QLabel("尚未选择素材")
+        self.result.setObjectName("section")
+        detail.addWidget(self.result)
+        detail.addWidget(QLabel("仅片头三帧，不代表全片审核通过"))
+        self.evidence = QPlainTextEdit()
+        self.evidence.setReadOnly(True)
+        detail.addWidget(self.evidence, 1)
+        detail.addWidget(QLabel("人工备注"))
+        self.note = QPlainTextEdit()
+        self.note.setMaximumHeight(85)
+        detail.addWidget(self.note)
+        actions = QHBoxLayout()
+        actions.addWidget(button("保存备注", self.save_note))
+        actions.addWidget(button("人工确认拦截", self.block))
+        detail.addLayout(actions)
+        actions2 = QHBoxLayout()
+        actions2.addWidget(button("重新检测", lambda: self.recheck.emit(self.video_id) if self.video_id else None))
+        actions2.addWidget(button("打开文件位置", lambda: local_open(Path(self.path).parent) if self.path else None))
+        detail.addLayout(actions2)
+        self.splitter.addWidget(right)
+        self.splitter.setSizes([230, 480, 340])
+        self.player.errorOccurred.connect(lambda error, text: self.caption.setText("播放器提示：" + text))
+
+    def update_time(self, value):
+        def formatted(ms):
+            seconds = ms // 1000
+            return f"{seconds // 60:02d}:{seconds % 60:02d}"
+        self.time.setText(f"{formatted(value)} / {formatted(self.player.duration())}")
+
+    def toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def playback_changed(self, state):
+        if state == QMediaPlayer.PlayingState:
+            self.video_stack.setCurrentWidget(self.video)
+        else:
+            frame = self.video.videoSink().videoFrame()
+            if frame.isValid():
+                self.poster_pixmap = QPixmap.fromImage(frame.toImage())
+            self.video_stack.setCurrentWidget(self.poster)
+            self.resize_poster()
+
+    def resize_poster(self):
+        if not self.poster_pixmap.isNull():
+            self.poster.setPixmap(self.poster_pixmap.scaled(self.poster.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resize_poster()
+
+    def show_record(self, row, record, note, label):
+        self.player.stop()
+        self.video_id = row["video_id"]
+        self.path = record.get("video_path", "")
+        self.heading.setText("检测复核")
+        self.caption.setText(str(row["source"]["剧名"] or "") + " · " + self.video_id)
+        self.blocked = bool(note.get("blocked"))
+        self.note.setPlainText(note.get("note", ""))
+        self.result.setText(label)
+        valid = bool(self.path) and Path(self.path).is_file()
+        frames = record.get("frames", [])
+        self.poster_pixmap = QPixmap(frames[0]["path"]) if frames else QPixmap()
+        self.poster.clear()
+        self.video_stack.setCurrentWidget(self.poster)
+        self.resize_poster()
+        self.player.setSource(QUrl.fromLocalFile(self.path) if valid else QUrl())
+        self.play_button.setEnabled(valid)
+        while self.frames_layout.count():
+            item = self.frames_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for index, frame in enumerate(record.get("frames", []), 1):
+            holder = QWidget()
+            layout = QVBoxLayout(holder)
+            layout.setContentsMargins(0, 0, 0, 0)
+            from PySide6.QtGui import QIcon
+            from PySide6.QtCore import QSize
+            thumb = QPushButton()
+            thumb.setIcon(QIcon(frame["path"]))
+            thumb.setIconSize(QSize(90, 100))
+            thumb.setAccessibleName(f"放大第{index}帧")
+            if any(h.get('frame') == index for h in record.get('hits', [])):
+                thumb.setStyleSheet('border:2px solid #CF5048;')
+            thumb.clicked.connect(lambda checked=False, f=frame: self.enlarge(f))
+            layout.addWidget(thumb)
+            seek = button(f"{frame['seconds']:.3f} 秒", lambda checked=False, f=frame: self.player.setPosition(round(f["seconds"] * 1000)))
+            layout.addWidget(seek)
+            self.frames_layout.addWidget(holder)
+        text = [record.get("reason", "")]
+        for hit in record.get("hits", []):
+            text.append(f"命中：{hit['match']} · 帧{hit['frame']}\n{hit['evidence']}")
+        raw = record.get("raw", {})
+        if isinstance(raw, dict):
+            for frame in raw.get("frames", []):
+                logo = {"absent": "未发现", "present": "命中", "uncertain": "待复核"}.get(frame.get("logo"), "未知")
+                text.append(f"\n帧 {frame.get('index')} 识别原文\n{frame.get('text', '')}\n红果图标：{logo} {frame.get('logo_evidence', '')}")
+        if record.get("model"):
+            text.append("\n检测模型：" + record["model"])
+        self.evidence.setPlainText("\n".join(text).strip() or "尚无检测结果。")
+
+    def enlarge(self, frame):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"证据帧 · {frame['seconds']:.3f} 秒")
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        pixmap = QPixmap(frame["path"])
+        label.setPixmap(pixmap.scaled(700, 720, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addWidget(label)
+        dialog.exec()
+
+    def save_note(self):
+        if self.video_id:
+            self.note_saved.emit(self.video_id, self.note.toPlainText(), self.blocked)
+
+    def block(self):
+        if not self.video_id:
+            return
+        if not self.note.toPlainText().strip():
+            QMessageBox.information(self, "记录原因", "请先在人工备注中填写拦截原因。")
+            return
+        self.blocked = True
+        self.result.setText("人工确认拦截 · 不上传")
+        self.save_note()
+
+
+class PlatformPage(QWidget):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.browser = None
+        layout = QVBoxLayout(self)
+        layout.addWidget(title('平台工作台'))
+        layout.addWidget(label('在软件内登录公司平台，上传功能将逐步接入'))
+        body = QHBoxLayout()
+        browser_card, box = card()
+        row = QHBoxLayout()
+        row.addWidget(button('←', lambda: self.browser.back() if self.browser else None))
+        row.addWidget(button('→', lambda: self.browser.forward() if self.browser else None))
+        row.addWidget(button('刷新', lambda: self.browser.reload() if self.browser else None))
+        self.address = QLineEdit(config.get('platform_url', ''))
+        self.address.setPlaceholderText('请输入公司平台地址')
+        self.address.returnPressed.connect(self.open_platform)
+        row.addWidget(self.address, 1)
+        row.addWidget(button('打开平台', self.open_platform, True))
+        box.addLayout(row)
+        self.area = QVBoxLayout()
+        self.empty = QLabel('▣\n\n打开公司素材平台\n\n首次使用请填写平台地址，打开后由您自行登录。\n\n登录状态保存在本机，平台要求重新验证时请再次登录。')
+        self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setObjectName('platformEmpty')
+        self.area.addWidget(self.empty)
+        box.addLayout(self.area, 1)
+        self.status = label('尚未打开平台 · 浏览模式')
+        box.addWidget(self.status)
+        body.addWidget(browser_card, 1)
+        preparation, box = card('上传准备')
+        preparation.setMaximumWidth(285)
+        box.addWidget(label('功能规划 · 待对齐', 'section'))
+        box.addWidget(label('命中与待复核素材不进入上传队列。'))
+        for heading, hint in [('固定信息', '平台统一默认值'), ('上传人信息', '按当前上传人填写'), ('素材信息', '按剧名与素材匹配')]:
+            box.addWidget(label(heading, 'section'))
+            box.addWidget(label(hint))
+            edit = QLineEdit()
+            edit.setPlaceholderText('字段待确认')
+            edit.setEnabled(False)
+            box.addWidget(edit)
+        box.addStretch()
+        upload = button('自动上传（待接入）', lambda: None)
+        upload.setEnabled(False)
+        box.addWidget(upload)
+        body.addWidget(preparation)
+        layout.addLayout(body, 1)
+
+    def open_platform(self):
+        url = QUrl(self.address.text().strip())
+        if not url.isValid() or url.scheme() not in ("http", "https") or not url.host() or url.userInfo():
+            QMessageBox.information(self, "平台地址待配置", "请在设置中填写公司平台地址。")
+            return
+        if self.browser is None:
+            from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+            self.profile = QWebEngineProfile("company-platform", self)
+            folder = DATA_ROOT / "runtime" / "browser"
+            self.profile.setPersistentStoragePath(str(folder / "storage"))
+            self.profile.setCachePath(str(folder / "cache"))
+            self.browser = QWebEngineView(self)
+            self.browser.setPage(QWebEnginePage(self.profile, self.browser))
+            self.browser.loadFinished.connect(lambda ok: self.status.setText("页面已加载 · 登录账号尚未自动识别" if ok else "网页加载失败，请检查内网连接与平台地址"))
+            self.browser.urlChanged.connect(lambda target: self.address.setText(target.toDisplayString()))
+            self.empty.hide()
+            self.area.addWidget(self.browser)
+        self.status.setText("正在打开公司平台…")
+        self.browser.setUrl(url)

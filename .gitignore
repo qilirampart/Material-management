@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+output/
+runtime/
+config.local.json
+~$*
+build/
+release/
+.playwright-mcp/
