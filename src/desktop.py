@@ -318,6 +318,8 @@ class MainWindow(QMainWindow):
                 item = QListWidgetItem(str(row['source']['剧名'] or '') + '\n' + row['video_id'] + '\n' + self.effective_status(row)[1])
                 item.setData(Qt.UserRole, row['video_id'])
                 self.review.materials.addItem(item)
+        if index == 2:
+            self.platform.set_materials(self.rows, self.records, self.notes, self.checked, self.folder)
         if index != 1:
             self.review.player.pause()
 

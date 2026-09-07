@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.upload import build_upload_plan, eligible_materials, stage_upload_batch, suggested_drama_name
 from src.vision import PHRASES, load_profile
 from src.ui_design import card, label
 
@@ -322,9 +323,12 @@ class PlatformPage(QWidget):
         super().__init__()
         self.config = config
         self.browser = None
+        self.materials = []
+        self.batch_folder = None
+        self.upload_batches = []
         layout = QVBoxLayout(self)
         layout.addWidget(title('平台工作台'))
-        layout.addWidget(label('在软件内登录公司平台，上传功能将逐步接入'))
+        layout.addWidget(label('在软件内登录公司平台，准备并上传检测通过的素材'))
         body = QHBoxLayout()
         browser_card, box = card()
         row = QHBoxLayout()
@@ -348,22 +352,96 @@ class PlatformPage(QWidget):
         box.addWidget(self.status)
         body.addWidget(browser_card, 1)
         preparation, box = card('上传准备')
-        preparation.setMaximumWidth(285)
-        box.addWidget(label('功能规划 · 待对齐', 'section'))
-        box.addWidget(label('命中与待复核素材不进入上传队列。'))
-        for heading, hint in [('固定信息', '平台统一默认值'), ('上传人信息', '按当前上传人填写'), ('素材信息', '按剧名与素材匹配')]:
-            box.addWidget(label(heading, 'section'))
-            box.addWidget(label(hint))
-            edit = QLineEdit()
-            edit.setPlaceholderText('字段待确认')
-            edit.setEnabled(False)
-            box.addWidget(edit)
+        preparation.setMaximumWidth(340)
+        box.addWidget(label('当前勾选', 'section'))
+        self.material_summary = label('0 条可上传 · 请在素材任务中勾选')
+        box.addWidget(self.material_summary)
+        self.material_list = QListWidget()
+        self.material_list.setMaximumHeight(120)
+        self.material_list.setAlternatingRowColors(True)
+        box.addWidget(self.material_list)
+        box.addWidget(label('固定信息', 'section'))
+        box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧 · 产品不限 · 付费'))
+        box.addWidget(label('上传信息', 'section'))
+        form = QFormLayout()
+        self.director = QLineEdit()
+        self.director.setPlaceholderText('选择或填写编导')
+        self.drama_name = QLineEdit()
+        self.drama_name.setPlaceholderText('从导入表格的剧名预填')
+        self.drama_id = QLineEdit()
+        self.drama_id.setPlaceholderText('平台建议短剧 ID')
+        self.uploader_initials = QLineEdit()
+        self.uploader_initials.setPlaceholderText('例如 ZYY')
+        form.addRow('编导', self.director)
+        form.addRow('建议短剧', self.drama_name)
+        form.addRow('短剧 ID', self.drama_id)
+        form.addRow('上传人缩写', self.uploader_initials)
+        box.addLayout(form)
+        self.prepare_button = button('生成上传批次', self.prepare_upload, True)
+        self.prepare_button.setEnabled(False)
+        box.addWidget(self.prepare_button)
+        self.batch_selector = QComboBox()
+        self.batch_selector.setEnabled(False)
+        box.addWidget(self.batch_selector)
+        self.preview = label('尚未生成上传文件名')
+        self.preview.setWordWrap(True)
+        box.addWidget(self.preview)
         box.addStretch()
-        upload = button('自动上传（待接入）', lambda: None)
-        upload.setEnabled(False)
-        box.addWidget(upload)
+        self.fill_button = button('填写平台并选择文件', self.fill_platform_form, True)
+        self.fill_button.setEnabled(False)
+        box.addWidget(self.fill_button)
+        box.addWidget(label('只完成文件选择与页面填写，不保存草稿，不提交审核。'))
         body.addWidget(preparation)
         layout.addLayout(body, 1)
+
+    def set_materials(self, rows, records, notes, selected_ids, batch_folder):
+        self.materials = eligible_materials(rows, records, notes, selected_ids)
+        self.batch_folder = Path(batch_folder) if batch_folder else None
+        self.upload_batches = []
+        self.batch_selector.clear()
+        self.batch_selector.setEnabled(False)
+        self.fill_button.setEnabled(False)
+        self.material_list.clear()
+        for material in self.materials:
+            drama = str(material.get('source', {}).get('剧名', '')).strip() or '未命名素材'
+            self.material_list.addItem(f"{drama} · {material['video_id']}")
+        self.material_summary.setText(f'{len(self.materials)} 条可上传 · 仅包含当前勾选且检测通过的素材')
+        proposed = suggested_drama_name(self.materials)
+        if proposed:
+            self.drama_name.setText(proposed)
+        self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
+        self.preview.setText('填写上传信息后生成批次' if self.materials else '没有符合条件的勾选素材')
+
+    def prepare_upload(self):
+        try:
+            plan = build_upload_plan(
+                self.materials,
+                drama_name=self.drama_name.text(),
+                drama_platform_id=self.drama_id.text(),
+                director=self.director.text(),
+                uploader_initials=self.uploader_initials.text(),
+            )
+            staging = self.batch_folder / 'upload-staging'
+            self.upload_batches = [stage_upload_batch(batch, staging) for batch in plan]
+        except (OSError, ValueError, KeyError) as exc:
+            self.preview.setText(str(exc))
+            self.fill_button.setEnabled(False)
+            return
+        self.batch_selector.clear()
+        for batch in self.upload_batches:
+            self.batch_selector.addItem(f"第 {batch['index']} 批 · {len(batch['items'])} 条", batch['index'] - 1)
+        self.batch_selector.setEnabled(bool(self.upload_batches))
+        self.fill_button.setEnabled(bool(self.upload_batches))
+        first = self.upload_batches[0]['items'][0]['upload_name'] if self.upload_batches else ''
+        self.preview.setText(f'已生成 {len(self.upload_batches)} 个批次\n文件名示例：{first}')
+
+    def fill_platform_form(self):
+        if not self.browser:
+            QMessageBox.information(self, '尚未打开平台', '请先打开公司平台并完成扫码登录。')
+            return
+        if not self.upload_batches:
+            return
+        self.status.setText('上传页面自动填写尚未连接 · 批次文件已准备')
 
     def open_platform(self):
         url = QUrl(self.address.text().strip())
