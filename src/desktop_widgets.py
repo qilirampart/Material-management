@@ -28,10 +28,12 @@ from src.platform_bridge import build_read_upload_selection_script, build_upload
 from src.upload import (
     build_upload_plan,
     eligible_materials,
+    forget_upload_preference,
     load_upload_preferences,
     remember_upload_preferences,
     stage_upload_batch,
     suggested_drama_name,
+    upload_preference_entries,
 )
 from src.vision import PHRASES, load_profile
 from src.ui_design import Background, card, label
@@ -407,6 +409,11 @@ class UploadConfigDialog(QDialog):
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(12)
+        self.history = QComboBox()
+        self.delete_history_button = QPushButton('删除当前记录')
+        history_row = QHBoxLayout()
+        history_row.addWidget(self.history, 1)
+        history_row.addWidget(self.delete_history_button)
         self.director = QLineEdit()
         self.director.setPlaceholderText('选择或填写编导')
         self.drama_name = QLineEdit()
@@ -416,6 +423,7 @@ class UploadConfigDialog(QDialog):
         self.drama_id.lineEdit().setPlaceholderText('平台建议短剧 ID')
         self.uploader_initials = QLineEdit(uploader_initials)
         self.uploader_initials.setPlaceholderText('例如 ZYY')
+        form.addRow('历史配置', history_row)
         form.addRow('编导', self.director)
         form.addRow('建议短剧', self.drama_name)
         form.addRow('短剧 ID', self.drama_id)
@@ -457,12 +465,15 @@ class PlatformPage(QWidget):
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         self.upload_config_dialog = UploadConfigDialog(self.upload_preferences['uploader_initials'], self)
         self.upload_config_dialog.submitted.connect(self.prepare_upload)
+        self.upload_config_dialog.history.currentIndexChanged.connect(self.apply_upload_history)
+        self.upload_config_dialog.delete_history_button.clicked.connect(self.delete_upload_history)
         self.director = self.upload_config_dialog.director
         self.drama_name = self.upload_config_dialog.drama_name
         self.drama_id = self.upload_config_dialog.drama_id
         self.uploader_initials = self.upload_config_dialog.uploader_initials
         self.drama_id.currentTextChanged.connect(self.apply_remembered_director)
         self.prepare_button = self.upload_config_dialog.generate_button
+        self.refresh_upload_history()
         layout = QVBoxLayout(self)
         layout.addWidget(title('平台工作台'))
         layout.addWidget(label('在软件内登录公司平台，准备并上传检测通过的素材'))
@@ -706,6 +717,7 @@ class PlatformPage(QWidget):
             uploader_initials=self.uploader_initials.text(),
         )
         self.upload_preferences = load_upload_preferences(self.preferences_path)
+        self.refresh_upload_history((self.drama_name.text(), self.drama_id.currentText()))
         self.status.setText(
             f"已读取并保存：{self.director.text()} · {self.drama_id.currentText()}-{self.drama_name.text()}"
         )
@@ -713,6 +725,49 @@ class PlatformPage(QWidget):
     def _platform_selection_failed(self, message):
         self.read_selection_button.setEnabled(True)
         self.status.setText(f'读取平台选择失败：{message}')
+
+    def refresh_upload_history(self, preferred=None):
+        history = self.upload_config_dialog.history
+        history.blockSignals(True)
+        history.clear()
+        history.addItem('请选择历史配置', None)
+        selected_index = 0
+        for entry in upload_preference_entries(self.upload_preferences):
+            text = f"{entry['drama_platform_id']}-{entry['drama_name']} · {entry['director']}"
+            history.addItem(text, entry)
+            if preferred == (entry['drama_name'], entry['drama_platform_id']):
+                selected_index = history.count() - 1
+        history.setCurrentIndex(selected_index)
+        history.blockSignals(False)
+
+    def apply_upload_history(self, _index):
+        entry = self.upload_config_dialog.history.currentData()
+        if not isinstance(entry, dict):
+            return
+        self.director.setText(entry['director'])
+        self.drama_name.setText(entry['drama_name'])
+        self.drama_id.setEditText(entry['drama_platform_id'])
+
+    def delete_upload_history(self):
+        entry = self.upload_config_dialog.history.currentData()
+        if not isinstance(entry, dict):
+            return
+        answer = QMessageBox.question(
+            self.upload_config_dialog,
+            '删除历史配置',
+            f"确定删除 {entry['drama_platform_id']}-{entry['drama_name']} · {entry['director']}？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        forget_upload_preference(
+            self.preferences_path,
+            entry['drama_name'],
+            entry['drama_platform_id'],
+        )
+        self.upload_preferences = load_upload_preferences(self.preferences_path)
+        self.refresh_upload_history()
 
     def prepare_upload(self):
         try:

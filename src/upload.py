@@ -148,8 +148,27 @@ def load_upload_preferences(path):
     }
 
 
-def remember_upload_preferences(path, *, drama_name, drama_platform_id, director, uploader_initials):
+def upload_preference_entries(preferences):
+    entries = []
+    for drama_name, drama in preferences.get("dramas", {}).items():
+        for platform_id, details in drama.get("ids", {}).items():
+            entries.append({
+                "drama_name": str(drama_name),
+                "drama_platform_id": str(platform_id),
+                "director": str(details.get("director", "")).strip(),
+            })
+    return sorted(entries, key=lambda item: (item["drama_name"], item["drama_platform_id"]))
+
+
+def _write_upload_preferences(path, preferences):
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def remember_upload_preferences(path, *, drama_name, drama_platform_id, director, uploader_initials):
     preferences = load_upload_preferences(path)
     name = str(drama_name).strip()
     platform_id = str(drama_platform_id).strip()
@@ -157,7 +176,20 @@ def remember_upload_preferences(path, *, drama_name, drama_platform_id, director
     drama["ids"][platform_id] = {"director": str(director).strip()}
     drama["last_id"] = platform_id
     preferences["uploader_initials"] = str(uploader_initials).strip()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    _write_upload_preferences(path, preferences)
+
+
+def forget_upload_preference(path, drama_name, drama_platform_id):
+    preferences = load_upload_preferences(path)
+    name = str(drama_name).strip()
+    platform_id = str(drama_platform_id).strip()
+    drama = preferences["dramas"].get(name)
+    if not drama or platform_id not in drama.get("ids", {}):
+        return False
+    del drama["ids"][platform_id]
+    if not drama["ids"]:
+        del preferences["dramas"][name]
+    else:
+        drama["last_id"] = next(iter(drama["ids"]))
+    _write_upload_preferences(path, preferences)
+    return True

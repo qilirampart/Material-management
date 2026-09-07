@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from PySide6.QtTest import QTest
 
 from src.desktop_widgets import AspectRatioContainer, PlatformPage
@@ -124,6 +124,32 @@ class PlatformUploadUiTests(unittest.TestCase):
             saved = preferences.read_text(encoding="utf-8")
             self.assertIn("41000339406", saved)
             self.assertIn("王仟", saved)
+            self.assertEqual(page.upload_config_dialog.history.count(), 2)
+            self.assertEqual(
+                page.upload_config_dialog.history.currentData()["drama_platform_id"],
+                "41000339406",
+            )
+            page.deleteLater()
+
+    @patch("src.desktop_widgets.QMessageBox.question", return_value=QMessageBox.Yes)
+    def test_user_can_delete_saved_upload_configuration(self, _question):
+        with tempfile.TemporaryDirectory() as folder:
+            preferences = Path(folder) / "upload-preferences.json"
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(preferences),
+            })
+            page._platform_selection_finished({
+                "ok": True,
+                "director": "王仟",
+                "dramaId": "41000339406",
+                "dramaName": "婚房门后的秘密",
+            })
+
+            page.delete_upload_history()
+
+            self.assertEqual(page.upload_config_dialog.history.count(), 1)
+            self.assertNotIn("41000339406", preferences.read_text(encoding="utf-8"))
             page.deleteLater()
 
 

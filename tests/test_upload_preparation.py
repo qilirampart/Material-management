@@ -6,10 +6,12 @@ from pathlib import Path
 from src.upload import (
     build_upload_plan,
     eligible_materials,
+    forget_upload_preference,
     load_upload_preferences,
     remember_upload_preferences,
     stage_upload_batch,
     suggested_drama_name,
+    upload_preference_entries,
 )
 
 
@@ -135,6 +137,27 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(drama["ids"]["98765"]["director"], "王俨")
             self.assertEqual(drama["last_id"], "87654")
             self.assertEqual(preferences["uploader_initials"], "ZYY")
+
+    def test_saved_upload_configuration_can_be_listed_and_deleted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "upload-preferences.json"
+            remember_upload_preferences(
+                path,
+                drama_name="婚房门后的秘密",
+                drama_platform_id="41000339406",
+                director="王仟",
+                uploader_initials="ZYY",
+            )
+
+            entries = upload_preference_entries(load_upload_preferences(path))
+            self.assertEqual(entries, [{
+                "drama_name": "婚房门后的秘密",
+                "drama_platform_id": "41000339406",
+                "director": "王仟",
+            }])
+
+            self.assertTrue(forget_upload_preference(path, "婚房门后的秘密", "41000339406"))
+            self.assertEqual(upload_preference_entries(load_upload_preferences(path)), [])
 
 
 if __name__ == "__main__":
