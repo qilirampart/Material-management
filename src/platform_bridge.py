@@ -5,6 +5,50 @@ import json
 from src.upload import FIXED_DEPARTMENTS
 
 
+def build_read_upload_selection_script():
+    return """(() => {
+  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const main = mainFrame?.contentDocument;
+  if (!main) return {ok:false, code:'MATERIAL_PAGE_MISSING', message:'请先进入素材管理页面'};
+  const uploadFrame = [...main.querySelectorAll('iframe')]
+    .filter(frame => frame.src.includes('material_add')).at(-1);
+  const doc = uploadFrame?.contentDocument;
+  if (!doc) return {ok:false, code:'UPLOAD_FORM_MISSING', message:'请先打开上传素材表单'};
+  const readSelected = name => {
+    const select = doc.querySelector(`[xm-select="${name}"]`);
+    if (!select) return null;
+    const option = [...select.selectedOptions].find(item => String(item.value).trim());
+    if (option) return {value:String(option.value).trim(), label:String(option.textContent || '').trim()};
+    const api = uploadFrame.contentWindow.formSelects || uploadFrame.contentWindow.layui?.formSelects;
+    const values = api?.value?.(name, 'val') || [];
+    const labels = api?.value?.(name, 'name') || [];
+    return values[0] ? {value:String(values[0]).trim(), label:String(labels[0] || values[0]).trim()} : null;
+  };
+  const director = readSelected('directorSelect');
+  const drama = readSelected('bookIdSelect');
+  const prefix = drama?.value ? `${drama.value}-` : '';
+  const dramaName = prefix && drama.label.startsWith(prefix) ? drama.label.slice(prefix.length).trim() : (drama?.label || '');
+  if (!director?.value || !drama?.value)
+    return {
+      ok:false,
+      code:'SELECTION_MISSING',
+      message:'请先在平台选择编导和建议书籍/短剧',
+      director:director?.value || '',
+      directorLabel:director?.label || '',
+      dramaId:drama?.value || '',
+      dramaName,
+    };
+  return {
+    ok:true,
+    code:'SELECTION_READ',
+    director:director.value,
+    directorLabel:director.label,
+    dramaId:drama.value,
+    dramaName,
+  };
+})()"""
+
+
 def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count):
     payload = json.dumps({
         "director": str(director).strip(),

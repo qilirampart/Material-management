@@ -2,10 +2,26 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.edge_cdp import edge_target_ids, fit_new_edge_page
+from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page
 
 
 class EdgeCdpTests(unittest.TestCase):
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_evaluates_script_and_returns_serialized_value(self, connect):
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({
+            "id": 1,
+            "result": {"result": {"type": "object", "value": {"ok": True}}},
+        })
+        connect.return_value = socket
+
+        result = evaluate_edge_page("ws://page", "({ok:true})")
+
+        self.assertEqual(result, {"ok": True})
+        payload = json.loads(socket.send.call_args.args[0])
+        self.assertTrue(payload["params"]["returnByValue"])
+        socket.close.assert_called_once()
+
     @patch("src.edge_cdp.edge_targets", return_value=[{"id": "old"}, {"id": "new"}])
     def test_target_snapshot_contains_ids(self, _targets):
         self.assertEqual(edge_target_ids(), {"old", "new"})

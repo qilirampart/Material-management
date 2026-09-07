@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
 from src.browser_session import configure_persistent_profile, platform_browser_root
-from src.edge_cdp import edge_target_ids, fit_new_edge_page
+from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page
 from src.edge_session import (
     find_embeddable_edge_window,
     focus_edge_window,
@@ -24,7 +24,7 @@ from src.edge_session import (
     primary_mouse_button_pressed,
     release_edge_input,
 )
-from src.platform_bridge import build_upload_form_script
+from src.platform_bridge import build_read_upload_selection_script, build_upload_form_script
 from src.upload import (
     build_upload_plan,
     eligible_materials,
@@ -509,6 +509,9 @@ class PlatformPage(QWidget):
         box.addWidget(self.material_list)
         box.addWidget(label('固定信息', 'section'))
         box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · 按部门可见'))
+        self.read_selection_button = button('读取平台已选信息', self.read_platform_selection)
+        self.read_selection_button.setEnabled(False)
+        box.addWidget(self.read_selection_button)
         self.configure_button = button('配置上传信息', self.open_upload_config, True)
         self.configure_button.setEnabled(False)
         box.addWidget(self.configure_button)
@@ -592,6 +595,7 @@ class PlatformPage(QWidget):
 
     def _edge_session_ready(self, ws_url):
         self.edge_target_ws_url = ws_url
+        self.read_selection_button.setEnabled(True)
         if self.edge_window_handle:
             prepare_edge_window_for_embedding(self.edge_window_handle)
             QTimer.singleShot(
@@ -665,6 +669,50 @@ class PlatformPage(QWidget):
             return
         self.upload_config_dialog.message.setText('生成后将按每批最多 50 条准备上传文件。')
         self.upload_config_dialog.exec()
+
+    def read_platform_selection(self):
+        script = build_read_upload_selection_script()
+        self.read_selection_button.setEnabled(False)
+        self.status.setText('正在读取平台当前选择…')
+        if self.browser:
+            self.browser.page().runJavaScript(script, self._platform_selection_finished)
+            return
+        if self.edge_target_ws_url:
+            self.selection_task = Background(
+                lambda: evaluate_edge_page(self.edge_target_ws_url, script),
+                self,
+            )
+            self.selection_task.result.connect(self._platform_selection_finished)
+            self.selection_task.failed.connect(self._platform_selection_failed)
+            self.selection_task.start()
+            return
+        self.read_selection_button.setEnabled(True)
+        QMessageBox.information(self, '尚未打开平台', '请先打开公司平台并进入添加素材页面。')
+
+    def _platform_selection_finished(self, result):
+        self.read_selection_button.setEnabled(True)
+        result = result if isinstance(result, dict) else {}
+        if not result.get('ok'):
+            self.status.setText(result.get('message', '未读取到平台选择'))
+            return
+        self.director.setText(str(result.get('director', '')).strip())
+        self.drama_name.setText(str(result.get('dramaName', '')).strip())
+        self.drama_id.setEditText(str(result.get('dramaId', '')).strip())
+        remember_upload_preferences(
+            self.preferences_path,
+            drama_name=self.drama_name.text(),
+            drama_platform_id=self.drama_id.currentText(),
+            director=self.director.text(),
+            uploader_initials=self.uploader_initials.text(),
+        )
+        self.upload_preferences = load_upload_preferences(self.preferences_path)
+        self.status.setText(
+            f"已读取并保存：{self.director.text()} · {self.drama_id.currentText()}-{self.drama_name.text()}"
+        )
+
+    def _platform_selection_failed(self, message):
+        self.read_selection_button.setEnabled(True)
+        self.status.setText(f'读取平台选择失败：{message}')
 
     def prepare_upload(self):
         try:
@@ -794,8 +842,12 @@ class PlatformPage(QWidget):
             self.upload_page = UploadPage(self.profile, self.browser)
             self.browser.setPage(self.upload_page)
             self.browser.setZoomFactor(0.67)
-            self.browser.loadFinished.connect(lambda ok: self.status.setText("页面已加载 · 登录账号尚未自动识别" if ok else "网页加载失败，请检查内网连接与平台地址"))
+            self.browser.loadFinished.connect(self._platform_load_finished)
             self.browser.urlChanged.connect(lambda target: self.address.setText(target.toDisplayString()))
             self.browser_stage.set_widget(self.browser)
         self.status.setText("正在打开公司平台…")
         self.browser.setUrl(url)
+
+    def _platform_load_finished(self, ok):
+        self.read_selection_button.setEnabled(bool(ok))
+        self.status.setText("页面已加载 · 可读取添加素材页当前选择" if ok else "网页加载失败，请检查内网连接与平台地址")

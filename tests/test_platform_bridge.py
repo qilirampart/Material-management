@@ -1,10 +1,18 @@
 import json
 import unittest
 
-from src.platform_bridge import build_upload_form_script
+from src.platform_bridge import build_read_upload_selection_script, build_upload_form_script
 
 
 class PlatformBridgeTests(unittest.TestCase):
+    def test_read_script_extracts_platform_director_and_drama_selection(self):
+        script = build_read_upload_selection_script()
+
+        self.assertIn("directorSelect", script)
+        self.assertIn("bookIdSelect", script)
+        self.assertIn("selectedOptions", script)
+        self.assertNotIn("click()", script)
+
     def test_script_contains_upload_fields_without_draft_or_review_actions(self):
         script = build_upload_form_script(
             director="王俨",

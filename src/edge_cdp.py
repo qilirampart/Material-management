@@ -7,6 +7,33 @@ import urllib.request
 import websocket
 
 
+def evaluate_edge_page(ws_url: str, expression: str):
+    socket = websocket.create_connection(ws_url, timeout=3, suppress_origin=True)
+    try:
+        socket.send(json.dumps({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+            },
+        }))
+        while True:
+            response = json.loads(socket.recv())
+            if response.get("id") == 1:
+                break
+        if response.get("error"):
+            raise RuntimeError(response["error"].get("message", "Edge 页面脚本执行失败。"))
+        result = response.get("result", {})
+        if result.get("exceptionDetails"):
+            description = result.get("result", {}).get("description", "Edge 页面脚本执行失败。")
+            raise RuntimeError(description)
+        return result.get("result", {}).get("value")
+    finally:
+        socket.close()
+
+
 def edge_targets(port: int = 9222) -> list[dict]:
     with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/json/list", timeout=2) as response:
         return json.load(response)

@@ -103,6 +103,29 @@ class PlatformUploadUiTests(unittest.TestCase):
         message.assert_called_once()
         page.deleteLater()
 
+    def test_platform_selection_populates_and_persists_upload_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            preferences = Path(folder) / "upload-preferences.json"
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(preferences),
+            })
+
+            page._platform_selection_finished({
+                "ok": True,
+                "director": "王仟",
+                "dramaId": "41000339406",
+                "dramaName": "婚房门后的秘密",
+            })
+
+            self.assertEqual(page.director.text(), "王仟")
+            self.assertEqual(page.drama_id.currentText(), "41000339406")
+            self.assertEqual(page.drama_name.text(), "婚房门后的秘密")
+            saved = preferences.read_text(encoding="utf-8")
+            self.assertIn("41000339406", saved)
+            self.assertIn("王仟", saved)
+            page.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
