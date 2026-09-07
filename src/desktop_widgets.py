@@ -629,6 +629,8 @@ class PlatformPage(QWidget):
     def _sync_edge_input_focus(self):
         if not self.edge_window_handle or not self.edge_container or not self.edge_container.isVisible():
             return
+        if QApplication.activeModalWidget() is not None:
+            return
         local_cursor = self.edge_container.mapFromGlobal(QCursor.pos())
         mouse_pressed = (
             QApplication.mouseButtons() & Qt.LeftButton
@@ -683,6 +685,8 @@ class PlatformPage(QWidget):
     def open_upload_config(self):
         if not self.materials:
             return
+        if self.edge_window_handle:
+            release_edge_input(self.edge_window_handle)
         self.upload_config_dialog.message.setText('生成后将按每批最多 50 条准备上传文件。')
         self.upload_config_dialog.exec()
 

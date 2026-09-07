@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from PySide6.QtTest import QTest
 
@@ -217,6 +218,52 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertEqual(page.director.text(), "")
             self.assertEqual(page.upload_config_dialog.history.currentIndex(), 0)
             page.deleteLater()
+
+    def test_generate_upload_batch_button_runs_the_generation_flow(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video = root / "download.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(root / "upload-preferences.json"),
+            })
+            page.set_materials(
+                [{"video_id": "1", "input_error": "", "source": {"剧名": "婚房门后的秘密"}}],
+                {"1": {"status": "sample_clear", "download": "已下载", "video_path": str(video)}},
+                {},
+                {"1"},
+                root,
+            )
+            page.director.setText("白佳丽")
+            page.drama_id.setEditText("41000339406")
+            page.uploader_initials.setText("psk")
+            page.upload_config_dialog.show()
+
+            QTest.mouseClick(page.prepare_button, Qt.LeftButton)
+            for _ in range(100):
+                if page.upload_batches:
+                    break
+                QTest.qWait(10)
+
+            self.assertEqual(len(page.upload_batches), 1)
+            self.assertFalse(page.upload_config_dialog.isVisible())
+            page.deleteLater()
+
+    @patch("src.desktop_widgets.focus_edge_window")
+    @patch("src.desktop_widgets.primary_mouse_button_pressed", return_value=True)
+    @patch("src.desktop_widgets.QApplication.activeModalWidget")
+    def test_modal_upload_dialog_prevents_edge_from_stealing_clicks(self, active_modal, _pressed, focus):
+        page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})
+        page.edge_window_handle = 123
+        page.edge_container = QWidget()
+        page.edge_container.show()
+        active_modal.return_value = page.upload_config_dialog
+
+        page._sync_edge_input_focus()
+
+        focus.assert_not_called()
+        page.deleteLater()
 
 
 if __name__ == "__main__":
