@@ -152,6 +152,37 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertNotIn("41000339406", preferences.read_text(encoding="utf-8"))
             page.deleteLater()
 
+    @patch("src.desktop_widgets.QMessageBox.information")
+    @patch("src.desktop_widgets.set_edge_file_input", return_value=1)
+    @patch(
+        "src.desktop_widgets.evaluate_edge_page",
+        return_value={"ok": True, "code": "FILE_INPUT_READY", "message": "ready"},
+    )
+    def test_embedded_edge_is_used_to_fill_form_and_select_files(self, _evaluate, set_files, message):
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / "upload.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})
+            page.edge_target_ws_url = "ws://edge-page"
+            page.director.setText("王仟")
+            page.drama_name.setText("婚房门后的秘密")
+            page.drama_id.setEditText("41000339406")
+            page.upload_batches = [{
+                "index": 1,
+                "items": [{"upload_path": str(video)}],
+            }]
+
+            page.fill_platform_form()
+            for _ in range(100):
+                if "1 个文件" in page.status.text():
+                    break
+                QTest.qWait(10)
+
+            message.assert_not_called()
+            set_files.assert_called_once()
+            self.assertIn("1 个文件", page.status.text())
+            page.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

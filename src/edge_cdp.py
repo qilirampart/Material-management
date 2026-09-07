@@ -7,6 +7,13 @@ import urllib.request
 import websocket
 
 
+def _receive_response(socket, request_id: int):
+    while True:
+        response = json.loads(socket.recv())
+        if response.get("id") == request_id:
+            return response
+
+
 def evaluate_edge_page(ws_url: str, expression: str):
     socket = websocket.create_connection(ws_url, timeout=3, suppress_origin=True)
     try:
@@ -19,10 +26,7 @@ def evaluate_edge_page(ws_url: str, expression: str):
                 "awaitPromise": True,
             },
         }))
-        while True:
-            response = json.loads(socket.recv())
-            if response.get("id") == 1:
-                break
+        response = _receive_response(socket, 1)
         if response.get("error"):
             raise RuntimeError(response["error"].get("message", "Edge 页面脚本执行失败。"))
         result = response.get("result", {})
@@ -30,6 +34,42 @@ def evaluate_edge_page(ws_url: str, expression: str):
             description = result.get("result", {}).get("description", "Edge 页面脚本执行失败。")
             raise RuntimeError(description)
         return result.get("result", {}).get("value")
+    finally:
+        socket.close()
+
+
+def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
+    files = [str(path) for path in paths]
+    socket = websocket.create_connection(ws_url, timeout=5, suppress_origin=True)
+    try:
+        socket.send(json.dumps({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {"expression": element_expression, "returnByValue": False},
+        }))
+        element_response = _receive_response(socket, 1)
+        object_id = element_response.get("result", {}).get("result", {}).get("objectId")
+        if not object_id:
+            raise RuntimeError("未找到视频文件选择控件。")
+        socket.send(json.dumps({
+            "id": 2,
+            "method": "DOM.setFileInputFiles",
+            "params": {"files": files, "objectId": object_id},
+        }))
+        file_response = _receive_response(socket, 2)
+        if file_response.get("error"):
+            raise RuntimeError(file_response["error"].get("message", "选择视频文件失败。"))
+        socket.send(json.dumps({
+            "id": 3,
+            "method": "Runtime.callFunctionOn",
+            "params": {
+                "objectId": object_id,
+                "functionDeclaration": "function(){this.dispatchEvent(new Event('change',{bubbles:true}));return this.files.length}",
+                "returnByValue": True,
+            },
+        }))
+        changed = _receive_response(socket, 3)
+        return int(changed.get("result", {}).get("result", {}).get("value", len(files)))
     finally:
         socket.close()
 

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
 from src.browser_session import configure_persistent_profile, platform_browser_root
-from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page
+from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page, set_edge_file_input
 from src.edge_session import (
     find_embeddable_edge_window,
     focus_edge_window,
@@ -24,7 +24,11 @@ from src.edge_session import (
     primary_mouse_button_pressed,
     release_edge_input,
 )
-from src.platform_bridge import build_read_upload_selection_script, build_upload_form_script
+from src.platform_bridge import (
+    build_read_upload_selection_script,
+    build_upload_file_input_script,
+    build_upload_form_script,
+)
 from src.upload import (
     build_upload_plan,
     eligible_materials,
@@ -826,7 +830,7 @@ class PlatformPage(QWidget):
         self.fill_button.setEnabled(False)
 
     def fill_platform_form(self):
-        if not self.browser:
+        if not self.browser and not self.edge_target_ws_url:
             QMessageBox.information(self, '尚未打开平台', '请先打开公司平台并完成扫码登录。')
             return
         if not self.upload_batches:
@@ -836,7 +840,8 @@ class PlatformPage(QWidget):
         if not all(Path(path).is_file() for path in paths):
             self.status.setText('上传暂存文件缺失，请重新生成批次')
             return
-        self.upload_page.queue_files(paths)
+        if self.browser:
+            self.upload_page.queue_files(paths)
         self.fill_button.setEnabled(False)
         self.status.setText(f"正在填写第 {batch['index']} 批 · {len(paths)} 条")
         self._run_platform_fill(batch, 0)
@@ -847,8 +852,23 @@ class PlatformPage(QWidget):
             drama_name=self.drama_name.text(),
             drama_platform_id=self.drama_id.currentText(),
             file_count=len(batch['items']),
+            request_file_dialog=bool(self.browser),
         )
-        self.browser.page().runJavaScript(script, lambda result: self._platform_fill_finished(batch, attempt, result))
+        if self.browser:
+            self.browser.page().runJavaScript(
+                script,
+                lambda result: self._platform_fill_finished(batch, attempt, result),
+            )
+            return
+        self.edge_fill_task = Background(
+            lambda: evaluate_edge_page(self.edge_target_ws_url, script),
+            self,
+        )
+        self.edge_fill_task.result.connect(
+            lambda result: self._platform_fill_finished(batch, attempt, result)
+        )
+        self.edge_fill_task.failed.connect(self._edge_files_failed)
+        self.edge_fill_task.start()
 
     def _platform_fill_finished(self, batch, attempt, result):
         result = result if isinstance(result, dict) else {}
@@ -856,13 +876,38 @@ class PlatformPage(QWidget):
             self.status.setText('已打开上传表单，等待页面控件加载…')
             QTimer.singleShot(800, lambda: self._run_platform_fill(batch, attempt + 1))
             return
+        if result.get('ok') and result.get('code') == 'FILE_INPUT_READY' and self.edge_target_ws_url:
+            paths = [item['upload_path'] for item in batch['items']]
+            self.status.setText('页面字段已填写，正在选择视频文件…')
+            self.edge_files_task = Background(
+                lambda: set_edge_file_input(
+                    self.edge_target_ws_url,
+                    build_upload_file_input_script(),
+                    paths,
+                ),
+                self,
+            )
+            self.edge_files_task.result.connect(self._edge_files_selected)
+            self.edge_files_task.failed.connect(self._edge_files_failed)
+            self.edge_files_task.start()
+            return
         self.fill_button.setEnabled(True)
         if result.get('ok'):
             self.status.setText(result.get('message', '平台表单已填写'))
             self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
         else:
-            self.upload_page.clear_queued_files()
+            if self.browser:
+                self.upload_page.clear_queued_files()
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
+
+    def _edge_files_selected(self, count):
+        self.fill_button.setEnabled(True)
+        self.status.setText(f'平台页面已填写并选择 {count} 个文件')
+        self.preview.setText(self.preview.text() + '\n已选择上传文件；未保存草稿，未提交审核。')
+
+    def _edge_files_failed(self, message):
+        self.fill_button.setEnabled(True)
+        self.status.setText(f'平台填写失败：{message}')
 
     def open_platform(self):
         url = QUrl(self.address.text().strip())

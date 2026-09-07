@@ -1,7 +1,11 @@
 import json
 import unittest
 
-from src.platform_bridge import build_read_upload_selection_script, build_upload_form_script
+from src.platform_bridge import (
+    build_read_upload_selection_script,
+    build_upload_file_input_script,
+    build_upload_form_script,
+)
 
 
 class PlatformBridgeTests(unittest.TestCase):
@@ -11,6 +15,13 @@ class PlatformBridgeTests(unittest.TestCase):
         self.assertIn("directorSelect", script)
         self.assertIn("bookIdSelect", script)
         self.assertIn("selectedOptions", script)
+        self.assertNotIn("click()", script)
+
+    def test_file_input_script_targets_upload_form_without_submitting(self):
+        script = build_upload_file_input_script()
+
+        self.assertIn("uploadVideoFile", script)
+        self.assertIn("material_add", script)
         self.assertNotIn("click()", script)
 
     def test_script_contains_upload_fields_without_draft_or_review_actions(self):

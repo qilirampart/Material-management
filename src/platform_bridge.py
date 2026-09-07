@@ -49,13 +49,24 @@ def build_read_upload_selection_script():
 })()"""
 
 
-def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count):
+def build_upload_file_input_script():
+    return """(() => {
+  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const main = mainFrame?.contentDocument;
+  const uploadFrame = main ? [...main.querySelectorAll('iframe')]
+    .filter(frame => frame.src.includes('material_add')).at(-1) : null;
+  return uploadFrame?.contentDocument?.querySelector('#uploadVideoFile') || null;
+})()"""
+
+
+def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count, request_file_dialog=True):
     payload = json.dumps({
         "director": str(director).strip(),
         "dramaName": str(drama_name).strip(),
         "dramaId": str(drama_platform_id).strip(),
         "departments": FIXED_DEPARTMENTS,
         "fileCount": int(file_count),
+        "requestFileDialog": bool(request_file_dialog),
     }, ensure_ascii=False)
     return f"""(() => {{
   const data = {payload};
@@ -112,8 +123,11 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
     setXm('deptSelect', data.departments);
     const fileInput = doc.querySelector('#uploadVideoFile');
     if (!fileInput) throw new Error('未找到视频文件选择控件');
-    fileInput.click();
-    return {{ok:true, code:'FILES_REQUESTED', message:`已填写页面并选择 ${{data.fileCount}} 个文件`}};
+    if (data.requestFileDialog) {{
+      fileInput.click();
+      return {{ok:true, code:'FILES_REQUESTED', message:`已填写页面并选择 ${{data.fileCount}} 个文件`}};
+    }}
+    return {{ok:true, code:'FILE_INPUT_READY', message:'页面字段已填写，正在选择文件'}};
   }} catch (error) {{
     return {{ok:false, code:'FILL_FAILED', message:String(error?.message || error)}};
   }}
