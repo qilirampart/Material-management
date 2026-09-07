@@ -21,6 +21,7 @@ from src.edge_session import (
     focus_edge_window,
     launch_embedded_edge,
     prepare_edge_window_for_embedding,
+    primary_mouse_button_pressed,
     release_edge_input,
 )
 from src.platform_bridge import build_upload_form_script
@@ -449,7 +450,7 @@ class PlatformPage(QWidget):
         self.edge_target_ws_url = None
         self.edge_zoom_task = None
         self.edge_focus_timer = QTimer(self)
-        self.edge_focus_timer.setInterval(50)
+        self.edge_focus_timer.setInterval(15)
         self.edge_focus_timer.timeout.connect(self._sync_edge_input_focus)
         QApplication.instance().focusChanged.connect(self._release_edge_focus_for_widget)
         self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
@@ -561,6 +562,7 @@ class PlatformPage(QWidget):
                 self.browser_stage.set_widget(self.edge_container)
                 prepare_edge_window_for_embedding(handle)
                 QTimer.singleShot(100, lambda: prepare_edge_window_for_embedding(handle))
+                QTimer.singleShot(150, lambda: focus_edge_window(handle))
                 self.status.setText('已嵌入专用 Edge · 正在适配页面尺寸…')
                 QTimer.singleShot(1200, self._fit_edge_session)
                 self.edge_button.setEnabled(False)
@@ -609,7 +611,11 @@ class PlatformPage(QWidget):
         if not self.edge_window_handle or not self.edge_container or not self.edge_container.isVisible():
             return
         local_cursor = self.edge_container.mapFromGlobal(QCursor.pos())
-        if self.edge_container.rect().contains(local_cursor) and QApplication.mouseButtons() & Qt.LeftButton:
+        mouse_pressed = (
+            QApplication.mouseButtons() & Qt.LeftButton
+            or primary_mouse_button_pressed()
+        )
+        if self.edge_container.rect().contains(local_cursor) and mouse_pressed:
             focus_edge_window(self.edge_window_handle)
 
     def _release_edge_focus_for_widget(self, _old, current):

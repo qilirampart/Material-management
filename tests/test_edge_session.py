@@ -12,6 +12,7 @@ from src.edge_session import (
     launch_embedded_edge,
     open_persistent_edge,
     persistent_edge_profile,
+    primary_mouse_button_pressed,
 )
 
 
@@ -19,6 +20,11 @@ class EdgeSessionTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows native window enumeration")
     def test_native_edge_window_enumeration_initializes(self):
         self.assertIsInstance(edge_window_handles(), list)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native mouse state")
+    @patch("src.edge_session.ctypes.windll.user32.GetAsyncKeyState", return_value=0x8000)
+    def test_native_left_mouse_press_is_detected(self, _state):
+        self.assertTrue(primary_mouse_button_pressed())
 
     def test_profile_defaults_to_project_runtime(self):
         self.assertEqual(persistent_edge_profile({}).name, "edge-cdp-profile")

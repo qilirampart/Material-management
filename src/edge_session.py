@@ -17,6 +17,7 @@ EDGE_LOCATIONS = (
     / "Microsoft/Edge/Application/msedge.exe",
 )
 _ATTACHED_INPUT_THREADS: dict[int, tuple[int, int]] = {}
+VK_LBUTTON = 0x01
 
 
 def persistent_edge_profile(config: dict) -> Path:
@@ -147,6 +148,12 @@ def prepare_edge_window_for_embedding(handle: int) -> None:
     style = (style & ~window_chrome) | 0x40000000
     set_style(handle, -16, style)
     user32.SetWindowPos(handle, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+
+
+def primary_mouse_button_pressed() -> bool:
+    if os.name != "nt":
+        return False
+    return bool(ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
 
 
 def _edge_input_window(handle: int) -> int:
