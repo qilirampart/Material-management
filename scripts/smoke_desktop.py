@@ -22,7 +22,6 @@ window = MainWindow(restore=False)
 folder = ROOT / "output" / "desktop_smoke" / "batch"
 folder.mkdir(parents=True, exist_ok=True)
 state = json.loads((ROOT / "output" / "pilot" / "results.json").read_text(encoding="utf-8"))
-state["input_path"] = str(ROOT / "懂小剧素材_婚房门后的秘密.xlsx")
 save_json(folder / "results.json", state)
 save_json(folder / "reviews.json", {})
 window.open_batch(folder)
