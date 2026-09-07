@@ -771,6 +771,12 @@ class PlatformPage(QWidget):
             entry['drama_name'],
             entry['drama_platform_id'],
         )
+        if (
+            self.drama_name.text().strip() == entry['drama_name']
+            and self.drama_id.currentText().strip() == entry['drama_platform_id']
+        ):
+            self.drama_id.setCurrentIndex(-1)
+            self.director.clear()
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         self.refresh_upload_history()
 

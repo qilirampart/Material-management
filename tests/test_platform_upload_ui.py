@@ -151,6 +151,8 @@ class PlatformUploadUiTests(unittest.TestCase):
 
             self.assertEqual(page.upload_config_dialog.history.count(), 1)
             self.assertNotIn("41000339406", preferences.read_text(encoding="utf-8"))
+            self.assertEqual(page.drama_id.currentText(), "")
+            self.assertEqual(page.director.text(), "")
             page.deleteLater()
 
     @patch("src.desktop_widgets.QMessageBox.information")
