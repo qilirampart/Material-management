@@ -15,10 +15,11 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
     QStackedWidget, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QComboBox, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QSpinBox,
+    QCheckBox,
 )
 
 from src.batch import LABELS, read_input, save_json, export_report
-from src.media import describe_bitrate, describe_video
+from src.media import describe_bitrate, describe_video, effective_video_bitrate_bps, probe
 from src.paths import RESOURCE_ROOT, DATA_ROOT, prepare_environment
 from src.vision import PHRASES, load_profile, fingerprint
 from src.desktop_widgets import button, title, local_open, SettingsPage, ReviewPage, PlatformPage
@@ -35,6 +36,16 @@ def read_json(path, fallback):
         return fallback
 
 
+def probe_missing_quality(items):
+    metadata = {}
+    for video_id, path in items:
+        try:
+            metadata[video_id] = probe(path)
+        except (OSError, ValueError, KeyError, RuntimeError):
+            continue
+    return metadata
+
+
 class MainWindow(QMainWindow):
     def __init__(self, restore=True):
         super().__init__()
@@ -48,6 +59,7 @@ class MainWindow(QMainWindow):
         self.rows, self.records, self.notes = [], {}, {}
         self.checked = set()
         self.io_task = None
+        self.quality_task = None
         self.folder = None
         self.input_path = None
         self.current_id = ""
@@ -179,6 +191,11 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         self.selection_label = label('已勾选 0 条')
         toolbar.addWidget(self.selection_label, 1)
+        self.bitrate_enhancement = QCheckBox('上传前码率增强至 4200 kbps')
+        self.bitrate_enhancement.setChecked(bool(self.config.get('normalize_upload_bitrate', True)))
+        self.bitrate_enhancement.setToolTip('仅生成上传副本，保留原始下载文件；源视频超过 3500 kbps 时不转码')
+        self.bitrate_enhancement.toggled.connect(self.set_upload_bitrate_normalization)
+        toolbar.addWidget(self.bitrate_enhancement)
         self.mode = QComboBox()
         self.mode.addItem('下载并检测', 'both')
         self.mode.addItem('仅下载', 'download')
@@ -433,7 +450,7 @@ class MainWindow(QMainWindow):
     def set_busy(self, busy):
         for control in [
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
-            self.mode, self.link_button, self.local_button, self.select_all_button,
+            self.mode, self.bitrate_enhancement, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
         ]:
@@ -589,6 +606,7 @@ class MainWindow(QMainWindow):
             self.batch_name.setText(f"{drama}  ·  {self.folder.name}")
             self.refresh_fingerprint()
             self.refresh_table()
+            self.refresh_missing_quality_metadata()
             if self.rows:
                 row = self.rows[0]
                 self.review.show_record(row, self.records.get(row["video_id"], {}), self.notes.get(row["video_id"], {}), self.effective_status(row)[1])
@@ -603,6 +621,55 @@ class MainWindow(QMainWindow):
             self.current_fingerprint = fingerprint(load_profile(self.config), logo, self.config.get("phrases", PHRASES))
         except (OSError, ValueError, KeyError):
             self.current_fingerprint = None
+
+    def refresh_missing_quality_metadata(self):
+        if self.quality_task and self.quality_task.isRunning():
+            return
+        pending = []
+        for video_id, record in self.records.items():
+            path = Path(record.get('video_path', ''))
+            if (
+                record.get('download') == '已下载'
+                and path.is_file()
+                and effective_video_bitrate_bps(record.get('metadata')) <= 0
+            ):
+                pending.append((video_id, str(path)))
+        if not pending or not self.folder:
+            return
+        batch_folder = self.folder.resolve()
+        self.statusBar().showMessage(f'正在后台读取 {len(pending)} 个视频的码率…')
+        self.quality_task = Background(
+            lambda: {
+                'folder': str(batch_folder),
+                'metadata': probe_missing_quality(pending),
+            },
+            self,
+        )
+        self.quality_task.result.connect(self.apply_quality_metadata)
+        self.quality_task.start()
+
+    def apply_quality_metadata(self, result):
+        if not self.folder or result.get('folder') != str(self.folder.resolve()):
+            return
+        updates = result.get('metadata', {})
+        for video_id, metadata in updates.items():
+            if video_id in self.records:
+                self.records[video_id]['metadata'] = metadata
+        if updates:
+            state_path = self.folder / 'results.json'
+            state = read_json(state_path, {})
+            state['records'] = self.records
+            save_json(state_path, state)
+            self.refresh_table()
+        self.statusBar().showMessage(f'已读取 {len(updates)} 个视频的码率信息')
+
+    def set_upload_bitrate_normalization(self, enabled):
+        self.config['normalize_upload_bitrate'] = bool(enabled)
+        if hasattr(self, 'settings'):
+            self.settings.config['normalize_upload_bitrate'] = bool(enabled)
+        save_json(self.config_path, self.config)
+        if hasattr(self, 'platform'):
+            self.platform.set_bitrate_normalization(enabled)
 
     def show_review_id(self, id_):
         row = next((r for r in self.rows if r['video_id'] == id_), None)
@@ -634,6 +701,11 @@ class MainWindow(QMainWindow):
     def save_settings(self, config):
         self.config = config
         self.platform.config = config
+        normalize_bitrate = bool(config.get('normalize_upload_bitrate', True))
+        self.bitrate_enhancement.blockSignals(True)
+        self.bitrate_enhancement.setChecked(normalize_bitrate)
+        self.bitrate_enhancement.blockSignals(False)
+        self.platform.set_bitrate_normalization(normalize_bitrate)
         self.platform.address.setText(config.get("platform_url", ""))
         save_json(self.config_path, config)
         self.refresh_fingerprint()

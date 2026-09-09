@@ -108,7 +108,7 @@ def build_upload_plan(
     ]
 
 
-def stage_upload_batch(batch, staging_root):
+def stage_upload_batch(batch, staging_root, *, normalize_bitrate=True):
     target_folder = Path(staging_root) / f"batch-{int(batch['index']):02d}"
     target_folder.mkdir(parents=True, exist_ok=True)
     staged_items = []
@@ -120,7 +120,8 @@ def stage_upload_batch(batch, staging_root):
         source_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         source_bitrate = effective_video_bitrate_bps(source_metadata)
         needs_bitrate_normalization = (
-            source_bitrate > 0
+            normalize_bitrate
+            and source_bitrate > 0
             and source_bitrate <= MINIMUM_VIDEO_BITRATE_KBPS * 1000
         )
         if target.exists():

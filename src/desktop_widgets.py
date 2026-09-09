@@ -548,6 +548,10 @@ class PlatformPage(QWidget):
         box.addWidget(self.material_list)
         box.addWidget(label('固定信息', 'section'))
         box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · 按部门可见'))
+        self.bitrate_policy = label('')
+        self.bitrate_policy.setWordWrap(True)
+        box.addWidget(self.bitrate_policy)
+        self.set_bitrate_normalization(config.get('normalize_upload_bitrate', True))
         self.read_selection_button = button('读取平台已选信息', self.read_platform_selection)
         self.read_selection_button.setEnabled(False)
         box.addWidget(self.read_selection_button)
@@ -569,6 +573,15 @@ class PlatformPage(QWidget):
         box.addWidget(label('只完成文件选择与页面填写，不保存草稿，不提交审核。'))
         body.addWidget(preparation)
         layout.addLayout(body, 1)
+
+    def set_bitrate_normalization(self, enabled):
+        self.config['normalize_upload_bitrate'] = bool(enabled)
+        if hasattr(self, 'bitrate_policy'):
+            self.bitrate_policy.setText(
+                '码率增强：已开启 · ≤3500 kbps 时生成 4200 kbps 上传副本'
+                if enabled else
+                '码率增强：已关闭 · 上传时保留原视频码率'
+            )
 
     def navigate_platform(self, action):
         if self.browser:
@@ -888,7 +901,14 @@ class PlatformPage(QWidget):
         self.prepare_button.setEnabled(False)
         self.fill_button.setEnabled(False)
         self.preview.setText('正在后台生成上传暂存文件…')
-        self.staging_task = Background(lambda: [stage_upload_batch(batch, staging) for batch in plan], self)
+        normalize_bitrate = bool(self.config.get('normalize_upload_bitrate', True))
+        self.staging_task = Background(
+            lambda: [
+                stage_upload_batch(batch, staging, normalize_bitrate=normalize_bitrate)
+                for batch in plan
+            ],
+            self,
+        )
         self.staging_task.result.connect(self.staging_ready)
         self.staging_task.failed.connect(self.staging_failed)
         self.staging_task.start()
@@ -913,10 +933,12 @@ class PlatformPage(QWidget):
             for batch in self.upload_batches
             for item in batch.get('items', [])
         )
-        bitrate_message = (
-            f'\n其中 {normalized_count} 个低码率视频已生成 4200 kbps 上传副本并复检通过'
-            if normalized_count else ''
-        )
+        if not self.config.get('normalize_upload_bitrate', True):
+            bitrate_message = '\n码率增强已关闭，本批次保留原视频码率'
+        elif normalized_count:
+            bitrate_message = f'\n其中 {normalized_count} 个低码率视频已生成 4200 kbps 上传副本并复检通过'
+        else:
+            bitrate_message = '\n本批次视频码率均已达标，无需增强'
         self.preview.setText(
             f'已生成 {len(self.upload_batches)} 个批次{bitrate_message}\n文件名示例：{first}'
         )

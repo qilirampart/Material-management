@@ -132,6 +132,31 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(staged_item["upload_metadata"], converted_metadata)
             transcode.assert_called_once()
 
+    @patch("src.upload.transcode_for_upload_bitrate")
+    def test_staging_can_leave_low_bitrate_source_unchanged(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"original-video")
+            batch = {
+                "index": 1,
+                "items": [{
+                    "original_path": str(source),
+                    "upload_name": "upload.mp4",
+                    "metadata": {"video_bitrate_bps": 1_200_000},
+                }],
+            }
+
+            staged = stage_upload_batch(
+                batch,
+                root / "upload-staging",
+                normalize_bitrate=False,
+            )
+
+            self.assertEqual(Path(staged["items"][0]["upload_path"]).read_bytes(), b"original-video")
+            self.assertFalse(staged["items"][0]["bitrate_normalized"])
+            transcode.assert_not_called()
+
     def test_staging_replaces_same_size_stale_file(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -1,5 +1,8 @@
+import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -86,6 +89,38 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertIn("1080×1920", quality)
         self.assertIn("4.80 Mbps", quality)
         self.assertIn("30fps", quality)
+
+    def test_upload_bitrate_enhancement_option_is_visible(self):
+        self.assertTrue(self.window.bitrate_enhancement.isVisibleTo(self.window))
+        self.assertIn("4200 kbps", self.window.bitrate_enhancement.text())
+
+    def test_backfilled_quality_is_displayed_and_saved_for_old_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "results.json").write_text("{}", encoding="utf-8")
+            self.window.folder = root
+            self.window.records = {
+                "7681538825608236331": {
+                    "download": "已下载",
+                    "video_path": str(root / "video.mp4"),
+                    "metadata": {"width": 576, "height": 1024},
+                },
+            }
+            metadata = {
+                "width": 576,
+                "height": 1024,
+                "video_bitrate_bps": 468_000,
+                "total_bitrate_bps": 528_000,
+            }
+
+            self.window.apply_quality_metadata({
+                "folder": str(root.resolve()),
+                "metadata": {"7681538825608236331": metadata},
+            })
+
+            self.assertIn("视频 468 kbps", self.window.table.item(0, 6).text())
+            saved = json.loads((root / "results.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["records"]["7681538825608236331"]["metadata"], metadata)
 
     def test_batch_selection_supports_first_n_invert_and_to_end(self):
         for offset in range(1, 5):
