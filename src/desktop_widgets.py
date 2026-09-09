@@ -461,6 +461,7 @@ class PlatformPage(QWidget):
         self.browser = None
         self.materials = []
         self.batch_folder = None
+        self.materials_key = None
         self.upload_batches = []
         self.staging_task = None
         self.edge_profile = None
@@ -740,8 +741,24 @@ class PlatformPage(QWidget):
         super().closeEvent(event)
 
     def set_materials(self, rows, records, notes, selected_ids, batch_folder):
-        self.materials = eligible_materials(rows, records, notes, selected_ids)
-        self.batch_folder = Path(batch_folder) if batch_folder else None
+        materials = eligible_materials(rows, records, notes, selected_ids)
+        folder = Path(batch_folder) if batch_folder else None
+        materials_key = (
+            str(folder.resolve()) if folder else '',
+            tuple(
+                (
+                    material['video_id'],
+                    str(material.get('record', {}).get('video_path', '')),
+                    str(material.get('record', {}).get('bitrate_enhanced_path', '')),
+                )
+                for material in materials
+            ),
+        )
+        self.materials = materials
+        self.batch_folder = folder
+        if materials_key == self.materials_key:
+            return
+        self.materials_key = materials_key
         self.upload_batches = []
         self.batch_selector.clear()
         self.batch_selector.setEnabled(False)

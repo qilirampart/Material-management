@@ -52,6 +52,38 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertFalse(page.batch_selector.isHidden())
             page.deleteLater()
 
+    def test_reentering_same_batch_keeps_upload_preparation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video = root / "download.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(root / "upload-preferences.json"),
+            })
+            rows = [{"video_id": "1", "input_error": "", "source": {"剧名": "婚房门后的秘密"}}]
+            records = {"1": {
+                "status": "sample_clear",
+                "download": "已下载",
+                "video_path": str(video),
+            }}
+            page.set_materials(rows, records, {}, {"1"}, root)
+            page.director.setText("白佳丽")
+            page.drama_id.setEditText("41000339406")
+            page.upload_batches = [{"index": 1, "items": []}]
+            page.batch_selector.addItem("第 1 批", page.upload_batches[0])
+            page.batch_selector.setVisible(True)
+            page.fill_button.setEnabled(True)
+
+            page.set_materials(rows, records, {}, {"1"}, root)
+
+            self.assertEqual(page.director.text(), "白佳丽")
+            self.assertEqual(page.drama_id.currentText(), "41000339406")
+            self.assertEqual(len(page.upload_batches), 1)
+            self.assertFalse(page.batch_selector.isHidden())
+            self.assertTrue(page.fill_button.isEnabled())
+            page.deleteLater()
+
     def test_browser_stage_centers_a_sixteen_by_nine_view(self):
         child = QWidget()
         stage = AspectRatioContainer(child, maximum_width=960)
