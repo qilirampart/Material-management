@@ -139,6 +139,39 @@ class CandidateTableUiTests(unittest.TestCase):
             saved = json.loads((root / "results.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["records"]["7681538825608236331"]["metadata"], metadata)
 
+    def test_bitrate_result_only_updates_the_batch_that_started_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "results.json").write_text("{}", encoding="utf-8")
+            self.window.folder = root
+            self.window.records = {"7681538825608236331": {}}
+            update = {
+                "bitrate_enhanced_path": str(root / "enhanced.mp4"),
+                "bitrate_enhanced_metadata": {"video_bitrate_bps": 4_200_000},
+            }
+
+            self.window.apply_enhanced_bitrates({
+                "folder": str(root.resolve()),
+                "updates": {"7681538825608236331": update},
+                "failed": {},
+            })
+            self.assertEqual(
+                self.window.records["7681538825608236331"]["bitrate_enhanced_path"],
+                update["bitrate_enhanced_path"],
+            )
+
+            self.window.apply_enhanced_bitrates({
+                "folder": str((root / "other-batch").resolve()),
+                "updates": {
+                    "7681538825608236331": {"bitrate_enhanced_path": "stale.mp4"},
+                },
+                "failed": {},
+            })
+            self.assertEqual(
+                self.window.records["7681538825608236331"]["bitrate_enhanced_path"],
+                update["bitrate_enhanced_path"],
+            )
+
     def test_batch_selection_supports_first_n_invert_and_to_end(self):
         for offset in range(1, 5):
             video_id = str(7681538825608236331 + offset)

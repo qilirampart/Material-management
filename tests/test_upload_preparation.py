@@ -194,6 +194,41 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(updates["123"]["bitrate_enhanced_metadata"], metadata)
 
     @patch("src.upload.transcode_for_upload_bitrate")
+    def test_explicit_enhancement_keeps_other_items_when_one_transcode_fails(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            records = {}
+            for video_id in ("1", "2", "3"):
+                source = root / f"{video_id}.mp4"
+                source.write_bytes(b"original-video")
+                records[video_id] = {
+                    "video_path": str(source),
+                    "metadata": {"video_bitrate_bps": 1_200_000},
+                }
+
+            def convert(_source, output):
+                if Path(output).stem == "2":
+                    raise RuntimeError("broken input")
+                Path(output).write_bytes(b"enhanced-video")
+                return {"video_bitrate_bps": 4_200_000}
+
+            transcode.side_effect = convert
+            completed = []
+            failed = []
+
+            updates = enhance_selected_bitrates(
+                records,
+                ["1", "2", "3"],
+                root / "enhanced",
+                item_completed=lambda video_id, values: completed.append((video_id, values)),
+                item_failed=lambda video_id, error: failed.append((video_id, type(error).__name__)),
+            )
+
+            self.assertEqual(set(updates), {"1", "3"})
+            self.assertEqual([video_id for video_id, _values in completed], ["1", "3"])
+            self.assertEqual(failed, [("2", "RuntimeError")])
+
+    @patch("src.upload.transcode_for_upload_bitrate")
     def test_staging_can_leave_low_bitrate_source_unchanged(self, transcode):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

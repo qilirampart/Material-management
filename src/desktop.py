@@ -52,6 +52,37 @@ def probe_missing_quality(items):
     return metadata
 
 
+def enhance_batch_bitrates(batch_folder, records, video_ids):
+    batch_folder = Path(batch_folder).resolve()
+    durable_records = copy.deepcopy(records)
+    state_path = batch_folder / 'results.json'
+    failed = {}
+
+    def persist_item(video_id, values):
+        if video_id not in durable_records:
+            return
+        durable_records[video_id].update(values)
+        state = read_json(state_path, {})
+        state['records'] = durable_records
+        save_json(state_path, state)
+
+    def record_failure(video_id, error):
+        failed[video_id] = type(error).__name__
+
+    updates = enhance_selected_bitrates(
+        durable_records,
+        video_ids,
+        batch_folder / 'bitrate-enhanced',
+        item_completed=persist_item,
+        item_failed=record_failure,
+    )
+    return {
+        'folder': str(batch_folder),
+        'updates': updates,
+        'failed': failed,
+    }
+
+
 class MainWindow(QMainWindow):
     def __init__(self, restore=True):
         super().__init__()
@@ -698,7 +729,8 @@ class MainWindow(QMainWindow):
         if not low_bitrate_ids:
             self.statusBar().showMessage('当前勾选素材中没有已读取码率且不达标的视频')
             return
-        output_folder = self.folder / 'bitrate-enhanced'
+        batch_folder = self.folder.resolve()
+        records = copy.deepcopy(self.records)
         self.set_busy(True)
         self.start_button.setEnabled(False)
         self.work_status.setText('正在提升码率 · 并发上限 1')
@@ -707,11 +739,7 @@ class MainWindow(QMainWindow):
         self.download_bar.setFormat('正在转码')
         self.statusBar().showMessage(f'正在提升 {len(low_bitrate_ids)} 个视频的码率…')
         self.bitrate_task = Background(
-            lambda: enhance_selected_bitrates(
-                self.records,
-                low_bitrate_ids,
-                output_folder,
-            ),
+            lambda: enhance_batch_bitrates(batch_folder, records, low_bitrate_ids),
             self,
         )
         self.bitrate_task.result.connect(self.apply_enhanced_bitrates)
@@ -719,17 +747,19 @@ class MainWindow(QMainWindow):
         self.bitrate_task.finished.connect(self.bitrate_enhancement_finished)
         self.bitrate_task.start()
 
-    def apply_enhanced_bitrates(self, updates):
+    def apply_enhanced_bitrates(self, result):
+        if not self.folder or result.get('folder') != str(self.folder.resolve()):
+            return
+        updates = result.get('updates', {})
+        failed = result.get('failed', {})
         for video_id, values in updates.items():
             if video_id in self.records:
                 self.records[video_id].update(values)
-        if self.folder and updates:
-            state_path = self.folder / 'results.json'
-            state = read_json(state_path, {})
-            state['records'] = self.records
-            save_json(state_path, state)
         self.refresh_table()
-        self.statusBar().showMessage(f'已完成 {len(updates)} 个低码率视频的达标副本')
+        message = f'已完成 {len(updates)} 个低码率视频的达标副本'
+        if failed:
+            message += f'，{len(failed)} 个失败，可重新勾选重试'
+        self.statusBar().showMessage(message)
 
     def bitrate_enhancement_failed(self, message):
         self.statusBar().showMessage(f'码率提升失败：{message}')

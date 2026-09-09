@@ -168,7 +168,13 @@ def stage_upload_batch(batch, staging_root, *, normalize_bitrate=False):
     return {**batch, "items": staged_items, "folder": str(target_folder)}
 
 
-def enhance_selected_bitrates(records, video_ids, output_folder):
+def enhance_selected_bitrates(
+    records,
+    video_ids,
+    output_folder,
+    item_completed=None,
+    item_failed=None,
+):
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
     enhanced = {}
@@ -180,10 +186,13 @@ def enhance_selected_bitrates(records, video_ids, output_folder):
             existing.is_file()
             and effective_video_bitrate_bps(existing_metadata) > MINIMUM_VIDEO_BITRATE_KBPS * 1000
         ):
-            enhanced[video_id] = {
+            values = {
                 "bitrate_enhanced_path": str(existing.resolve()),
                 "bitrate_enhanced_metadata": existing_metadata,
             }
+            enhanced[video_id] = values
+            if item_completed:
+                item_completed(video_id, values)
             continue
         source = Path(record.get("video_path", ""))
         source_bitrate = effective_video_bitrate_bps(record.get("metadata"))
@@ -194,11 +203,19 @@ def enhance_selected_bitrates(records, video_ids, output_folder):
         ):
             continue
         target = output_folder / f"{safe_filename_part(video_id)}.mp4"
-        metadata = transcode_for_upload_bitrate(source, target)
-        enhanced[video_id] = {
+        try:
+            metadata = transcode_for_upload_bitrate(source, target)
+        except Exception as exc:
+            if item_failed:
+                item_failed(video_id, exc)
+            continue
+        values = {
             "bitrate_enhanced_path": str(target.resolve()),
             "bitrate_enhanced_metadata": metadata,
         }
+        enhanced[video_id] = values
+        if item_completed:
+            item_completed(video_id, values)
     return enhanced
 
 
