@@ -571,6 +571,20 @@ class PlatformPage(QWidget):
         body.addWidget(preparation)
         layout.addLayout(body, 1)
 
+    def active_background_tasks(self):
+        task_names = (
+            'staging_task',
+            'edge_zoom_task',
+            'edge_navigation_task',
+            'selection_task',
+            'edge_fill_task',
+            'edge_files_task',
+        )
+        return [
+            task for name in task_names
+            if (task := getattr(self, name, None)) is not None and task.isRunning()
+        ]
+
     def navigate_platform(self, action):
         if self.browser:
             {

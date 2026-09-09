@@ -282,7 +282,8 @@ class MainWindow(QMainWindow):
         self.set_busy(False)
 
     def new_batch(self):
-        if self.is_running() or (self.io_task and self.io_task.isRunning()):
+        if self.is_running() or self.has_active_background_tasks():
+            self.statusBar().showMessage('后台任务仍在运行，完成后才能新建批次')
             return
         self.rows, self.records, self.notes = [], {}, {}
         self.checked.clear()
@@ -452,6 +453,14 @@ class MainWindow(QMainWindow):
 
     def is_running(self):
         return self.process is not None and self.process.state() != QProcess.NotRunning
+
+    def active_background_tasks(self):
+        tasks = [self.io_task, self.quality_task, self.bitrate_task, self.settings.testing]
+        tasks.extend(self.platform.active_background_tasks())
+        return [task for task in tasks if task is not None and task.isRunning()]
+
+    def has_active_background_tasks(self):
+        return bool(self.active_background_tasks())
 
     def set_busy(self, busy):
         for control in [
@@ -808,7 +817,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("请先选中需要重新检测的素材")
 
     def start_batch(self, selected=None, force=False):
-        if self.is_running() or (self.io_task and self.io_task.isRunning()):
+        if self.is_running() or self.has_active_background_tasks():
+            self.statusBar().showMessage('后台任务仍在运行，完成后才能开始处理')
             return
         if not self.folder or not self.input_path:
             QMessageBox.information(self, "尚未准备批次", "请导入需求表，或打开含原始输入文件的历史批次。")
@@ -957,8 +967,8 @@ class MainWindow(QMainWindow):
             self.review.splitter.setOrientation(Qt.Vertical if self.width() < 1150 else Qt.Horizontal)
 
     def closeEvent(self, event):
-        if (self.io_task and self.io_task.isRunning()) or (self.settings.testing and self.settings.testing.isRunning()):
-            self.statusBar().showMessage('后台读表或模型测试尚未结束，请稍后关闭。')
+        if self.has_active_background_tasks():
+            self.statusBar().showMessage('后台任务仍在运行，请等待完成后关闭。')
             event.ignore()
             return
         if self.is_running():
