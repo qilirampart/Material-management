@@ -634,11 +634,17 @@ class MainWindow(QMainWindow):
         self.io_task.start()
 
     def choose_batch(self):
+        if self.is_running() or self.has_active_background_tasks():
+            self.statusBar().showMessage('后台任务仍在运行，完成后才能打开历史批次')
+            return
         path, _ = QFileDialog.getOpenFileName(self, "打开批次结果", self.config["output_root"], "批次结果 (results.json)")
         if path:
             self.open_batch(Path(path).parent)
 
     def open_batch(self, folder):
+        if self.is_running() or self.has_active_background_tasks():
+            self.statusBar().showMessage('后台任务仍在运行，完成后才能切换批次')
+            return
         try:
             state = json.loads((folder / "results.json").read_text(encoding="utf-8"))
             if not isinstance(state.get("input_rows"), list) or not isinstance(state.get("records"), dict):

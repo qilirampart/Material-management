@@ -1,5 +1,8 @@
 import os
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -47,6 +50,21 @@ class BackgroundTaskGuardTests(unittest.TestCase):
         self.window.new_batch()
 
         self.assertEqual(self.window.rows, [{"video_id": "123"}])
+
+    def test_history_batch_cannot_replace_state_during_background_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "results.json").write_text(json.dumps({
+                "input_rows": [{"video_id": "new"}],
+                "records": {"new": {}},
+            }), encoding="utf-8")
+            self.window.rows = [{"video_id": "current"}]
+            self.window.bitrate_task = RunningTask()
+
+            with patch("src.desktop.QMessageBox.warning"):
+                self.window.open_batch(root)
+
+            self.assertEqual(self.window.rows, [{"video_id": "current"}])
 
     def test_start_batch_is_blocked_while_quality_task_runs(self):
         self.window.quality_task = RunningTask()
