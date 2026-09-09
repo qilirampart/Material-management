@@ -462,6 +462,7 @@ class PlatformPage(QWidget):
         self.materials = []
         self.batch_folder = None
         self.materials_key = None
+        self.materials_generation = 0
         self.upload_batches = []
         self.staging_task = None
         self.edge_profile = None
@@ -759,6 +760,7 @@ class PlatformPage(QWidget):
         if materials_key == self.materials_key:
             return
         self.materials_key = materials_key
+        self.materials_generation += 1
         self.upload_batches = []
         self.batch_selector.clear()
         self.batch_selector.setEnabled(False)
@@ -927,8 +929,13 @@ class PlatformPage(QWidget):
             ],
             self,
         )
-        self.staging_task.result.connect(self.staging_ready)
-        self.staging_task.failed.connect(self.staging_failed)
+        generation = self.materials_generation
+        self.staging_task.result.connect(
+            lambda batches, current=generation: self.staging_ready(batches, current)
+        )
+        self.staging_task.failed.connect(
+            lambda message, current=generation: self.staging_failed(message, current)
+        )
         self.staging_task.start()
 
     def apply_remembered_director(self, platform_id):
@@ -937,7 +944,9 @@ class PlatformPage(QWidget):
         if remembered.get('director'):
             self.director.setText(remembered['director'])
 
-    def staging_ready(self, batches):
+    def staging_ready(self, batches, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         self.upload_batches = batches
         self.batch_selector.clear()
         for batch in self.upload_batches:
@@ -960,7 +969,9 @@ class PlatformPage(QWidget):
         )
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
 
-    def staging_failed(self, message):
+    def staging_failed(self, message, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         self.upload_batches = []
         self.preview.setText(message)
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
@@ -979,9 +990,11 @@ class PlatformPage(QWidget):
             return
         self.fill_button.setEnabled(False)
         self.status.setText(f"正在填写第 {batch['index']} 批 · {len(paths)} 条")
-        self._run_platform_fill(batch, 0)
+        self._run_platform_fill(batch, 0, self.materials_generation)
 
-    def _run_platform_fill(self, batch, attempt):
+    def _run_platform_fill(self, batch, attempt, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         script = build_upload_form_script(
             director=self.director.text(),
             drama_name=self.drama_name.text(),
@@ -993,7 +1006,7 @@ class PlatformPage(QWidget):
             self.browser.page().runJavaScript(
                 build_json_result_script(script),
                 lambda result: self._platform_fill_finished(
-                    batch, attempt, parse_json_result(result)
+                    batch, attempt, parse_json_result(result), generation
                 ),
             )
             return
@@ -1002,12 +1015,14 @@ class PlatformPage(QWidget):
             self,
         )
         self.edge_fill_task.result.connect(
-            lambda result: self._platform_fill_finished(batch, attempt, result)
+            lambda result: self._platform_fill_finished(batch, attempt, result, generation)
         )
         self.edge_fill_task.failed.connect(self._edge_files_failed)
         self.edge_fill_task.start()
 
-    def _platform_fill_finished(self, batch, attempt, result):
+    def _platform_fill_finished(self, batch, attempt, result, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         result = result if isinstance(result, dict) else {}
         if result.get('code') in {'OPENING_FORM', 'SOURCE_TYPE_CHANGING', 'BOOK_SEARCH_STARTED'} and attempt < 5:
             if result.get('code') == 'BOOK_SEARCH_STARTED':
@@ -1019,11 +1034,17 @@ class PlatformPage(QWidget):
             else:
                 self.status.setText('已打开上传表单，等待页面控件加载…')
                 delay = 800
-            QTimer.singleShot(delay, lambda: self._run_platform_fill(batch, attempt + 1))
+            QTimer.singleShot(
+                delay,
+                lambda: self._run_platform_fill(batch, attempt + 1, generation),
+            )
             return
         if result.get('ok') and result.get('code') == 'FILE_INPUT_READY' and (self.browser or self.edge_target_ws_url):
             self.status.setText('页面字段已填写，等待平台文件控件稳定…')
-            QTimer.singleShot(800, lambda: self._start_platform_file_selection(batch, 0))
+            QTimer.singleShot(
+                800,
+                lambda: self._start_platform_file_selection(batch, 0, generation),
+            )
             return
         self.fill_button.setEnabled(True)
         if result.get('ok'):
@@ -1032,7 +1053,9 @@ class PlatformPage(QWidget):
         else:
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
 
-    def _start_platform_file_selection(self, batch, attempt):
+    def _start_platform_file_selection(self, batch, attempt, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         paths = [item['upload_path'] for item in batch['items']]
         self.status.setText(
             '正在选择视频文件…'
@@ -1057,25 +1080,33 @@ class PlatformPage(QWidget):
             )
 
         self.edge_files_task = Background(select_files, self)
-        self.edge_files_task.result.connect(self._edge_files_selected)
+        self.edge_files_task.result.connect(
+            lambda result: self._edge_files_selected(result, generation)
+        )
         self.edge_files_task.failed.connect(
             lambda message: self._platform_file_selection_failed(
-                batch, attempt, message
+                batch, attempt, message, generation
             )
         )
         self.edge_files_task.start()
 
-    def _platform_file_selection_failed(self, batch, attempt, message):
+    def _platform_file_selection_failed(self, batch, attempt, message, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         if attempt < 2:
             self.status.setText('平台文件控件发生刷新，稍后自动重试…')
             QTimer.singleShot(
                 800,
-                lambda: self._start_platform_file_selection(batch, attempt + 1),
+                lambda: self._start_platform_file_selection(
+                    batch, attempt + 1, generation
+                ),
             )
             return
         self._edge_files_failed(message)
 
-    def _edge_files_selected(self, result):
+    def _edge_files_selected(self, result, generation=None):
+        if generation is not None and generation != self.materials_generation:
+            return
         self.fill_button.setEnabled(True)
         result = result if isinstance(result, dict) else {}
         count = int(result.get('plugin_count') or result.get('input_count') or 0)

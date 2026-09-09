@@ -84,6 +84,31 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertTrue(page.fill_button.isEnabled())
             page.deleteLater()
 
+    def test_stale_staging_result_cannot_replace_new_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first_video = root / "first.mp4"
+            second_video = root / "second.mp4"
+            first_video.write_bytes(b"first")
+            second_video.write_bytes(b"second")
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(root / "preferences.json"),
+            })
+            first_rows = [{"video_id": "1", "input_error": "", "source": {"剧名": "A"}}]
+            first_records = {"1": {"status": "sample_clear", "download": "已下载", "video_path": str(first_video)}}
+            page.set_materials(first_rows, first_records, {}, {"1"}, root / "batch-a")
+            old_generation = page.materials_generation
+
+            second_rows = [{"video_id": "2", "input_error": "", "source": {"剧名": "B"}}]
+            second_records = {"2": {"status": "sample_clear", "download": "已下载", "video_path": str(second_video)}}
+            page.set_materials(second_rows, second_records, {}, {"2"}, root / "batch-b")
+            page.staging_ready([{"index": 1, "items": []}], old_generation)
+
+            self.assertEqual(page.upload_batches, [])
+            self.assertEqual(page.materials[0]["video_id"], "2")
+            page.deleteLater()
+
     def test_browser_stage_centers_a_sixteen_by_nine_view(self):
         child = QWidget()
         stage = AspectRatioContainer(child, maximum_width=960)
