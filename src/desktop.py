@@ -935,7 +935,7 @@ class MainWindow(QMainWindow):
                 self.work_detail.setText(self.current_id + "\n" + self.current_stage)
                 self.download_bar.setRange(0, 0)
                 self.transfer_detail.setText(self.current_stage + '…')
-                self.refresh_table()
+                self.show_stage_progress(self.current_id, self.current_stage)
                 self.statusBar().showMessage(self.current_id + " · " + self.current_stage)
             elif kind == 'download_progress':
                 self.show_download_progress(event)
@@ -952,6 +952,12 @@ class MainWindow(QMainWindow):
                 self.batch_lock.unlock()
             self.close_after = False
             self.statusBar().showMessage("后台进程启动失败：" + self.process.errorString())
+
+    def show_stage_progress(self, video_id, stage):
+        for index, row in enumerate(self.rows):
+            if row['video_id'] == video_id:
+                self.table.item(index, 7).setText(stage + '…')
+                break
 
     def show_download_progress(self, event):
         self.current_id = event['video_id']

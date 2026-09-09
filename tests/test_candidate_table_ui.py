@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -81,6 +82,24 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertEqual(self.window.table.item(0, 3).text(), title)
         self.assertEqual(self.window.table.item(0, 5).text(), "下载 50.0%")
         self.assertIn("1.0 MB/s", self.window.table.item(0, 5).toolTip())
+
+    def test_stage_progress_updates_one_row_without_full_table_refresh(self):
+        with tempfile.TemporaryDirectory() as folder:
+            event_path = Path(folder) / "events.jsonl"
+            event_path.write_text(json.dumps({
+                "type": "progress",
+                "video_id": "7681538825608236331",
+                "stage": "抽帧检测",
+            }) + "\n", encoding="utf-8")
+            self.window.event_path = event_path
+            self.window.event_offset = 0
+
+            with patch.object(self.window, "refresh_table") as refresh:
+                self.window.poll_events()
+
+            refresh.assert_not_called()
+            self.assertEqual(self.window.table.item(0, 7).text(), "抽帧检测…")
+            self.assertEqual(self.window.table.item(0, 2).text(), "7681538825608236331")
 
     def test_downloaded_video_quality_is_visible_in_candidate_table(self):
         self.window.records = {
