@@ -82,17 +82,37 @@ def export_report(rows, records, path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "检测结果"
-    extra = ["原工作表", "原行号", "下载状态", "抽检状态", "命中项", "证据说明", "本地视频", "证据帧", "失败或待复核原因", "检测范围", "模型", "上传状态"]
+    extra = [
+        "原工作表", "原行号", "下载状态", "抽检状态", "命中项", "证据说明",
+        "本地视频", "证据帧", "失败或待复核原因", "检测范围", "模型", "上传状态",
+        "分辨率", "视频编码", "帧率", "总码率(Mbps)", "视频码率(Mbps)", "文件大小(MB)", "时长(s)",
+    ]
     sheet.append(HEADERS + extra)
     for row in rows:
         r = records.get(row["video_id"], {}) if not row["input_error"] else {"status": "invalid_input", "reason": row["input_error"]}
         frames = r.get("frames", [])
         hits = r.get("hits", [])
+        metadata = r.get("metadata", {})
         evidence = "\n".join(f"帧{h['frame']}：{h['evidence']}" for h in hits)
         sheet.append([row["source"][h] for h in HEADERS] + [row["sheet"], row["row"], r.get("download", "未下载"),
                      LABELS.get(r.get("status", "pending"), "待复核"), "、".join(dict.fromkeys(h["match"] for h in hits)), evidence,
                      r.get("video_path", ""), "\n".join(f"{f['seconds']:.3f}s {f['path']}" for f in frames), r.get("reason", ""),
-                     "仅片头三帧，不代表全片", r.get("model", ""), "未上传"])
+                     "仅片头三帧，不代表全片", r.get("model", ""), "未上传",
+                     (
+                         f"{metadata.get('width')}×{metadata.get('height')}"
+                         if metadata.get("width") and metadata.get("height") else ""
+                     ),
+                     metadata.get("video_codec", ""),
+                     metadata.get("frame_rate", ""),
+                     round(float(metadata.get("total_bitrate_bps", 0)) / 1_000_000, 3)
+                     if metadata.get("total_bitrate_bps") else "",
+                     round(float(metadata.get("video_bitrate_bps", 0)) / 1_000_000, 3)
+                     if metadata.get("video_bitrate_bps") else "",
+                     round(float(metadata.get("file_size_bytes", 0)) / 1048576, 2)
+                     if metadata.get("file_size_bytes") else "",
+                     round(float(metadata.get("duration", 0)), 3)
+                     if metadata.get("duration") else "",
+                     ])
         for cell in sheet[sheet.max_row]:
             if cell.data_type == "f":
                 cell.data_type = "s"
@@ -104,7 +124,10 @@ def export_report(rows, records, path):
     for cell in sheet[1]:
         cell.font = Font(name="Arial", color="FFFFFF", bold=True)
         cell.fill = PatternFill("solid", fgColor="24476B")
-    widths = [24, 24, 10, 10, 22, 48, 20, 10, 14, 24, 30, 45, 55, 60, 45, 30, 24, 12]
+    widths = [
+        24, 24, 10, 10, 22, 48, 20, 10, 14, 24, 30, 45, 55, 60, 45, 30, 24, 12,
+        16, 14, 12, 18, 18, 16, 14,
+    ]
     from openpyxl.utils import get_column_letter
     for i, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(i)].width = width

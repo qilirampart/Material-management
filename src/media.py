@@ -10,6 +10,45 @@ class FFmpegError(RuntimeError):
     pass
 
 
+def _number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _frame_rate(value):
+    if not value or value == "0/0":
+        return 0.0
+    numerator, separator, denominator = str(value).partition("/")
+    if not separator:
+        return _number(value)
+    denominator_value = _number(denominator)
+    return _number(numerator) / denominator_value if denominator_value else 0.0
+
+
+def describe_video(metadata):
+    if not isinstance(metadata, dict) or not metadata:
+        return ""
+    parts = []
+    width, height = metadata.get("width"), metadata.get("height")
+    if width and height:
+        parts.append(f"{width}×{height}")
+    frame_rate = _number(metadata.get("frame_rate"))
+    if frame_rate:
+        parts.append(f"{frame_rate:g}fps")
+    bitrate = _number(metadata.get("total_bitrate_bps"))
+    if bitrate:
+        parts.append(f"{bitrate / 1_000_000:.2f} Mbps")
+    codec = str(metadata.get("video_codec") or "").strip()
+    if codec:
+        parts.append(codec.upper())
+    size = _number(metadata.get("file_size_bytes"))
+    if size:
+        parts.append(f"{size / 1048576:.1f} MB")
+    return " · ".join(parts)
+
+
 def run(command, timeout=180):
     result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
                             timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -19,6 +58,7 @@ def run(command, timeout=180):
 
 
 def probe(path):
+    path = Path(path)
     info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]))
     streams = info.get("streams", [])
     videos = [s for s in streams if s.get("codec_type") == "video"]
@@ -27,8 +67,22 @@ def probe(path):
     duration = float(info.get("format", {}).get("duration", 0))
     if duration <= 0:
         raise FFmpegError("无有效视频时长")
-    return {"duration": duration, "audio": any(s.get("codec_type") == "audio" for s in streams),
-            "width": videos[0]["width"], "height": videos[0]["height"]}
+    video = videos[0]
+    file_size = int(_number(info.get("format", {}).get("size"), path.stat().st_size))
+    total_bitrate = int(_number(info.get("format", {}).get("bit_rate")))
+    if total_bitrate <= 0 and duration > 0:
+        total_bitrate = round(file_size * 8 / duration)
+    return {
+        "duration": duration,
+        "audio": any(s.get("codec_type") == "audio" for s in streams),
+        "width": video["width"],
+        "height": video["height"],
+        "file_size_bytes": file_size,
+        "total_bitrate_bps": total_bitrate,
+        "video_bitrate_bps": int(_number(video.get("bit_rate"))),
+        "frame_rate": _frame_rate(video.get("avg_frame_rate") or video.get("r_frame_rate")),
+        "video_codec": str(video.get("codec_name") or ""),
+    }
 
 
 def ensure_video_has_decodable_frame(path):

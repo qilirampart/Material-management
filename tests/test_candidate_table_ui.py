@@ -62,6 +62,29 @@ class CandidateTableUiTests(unittest.TestCase):
 
         self.assertFalse(self.window.table.isRowHidden(0))
 
+    def test_downloaded_video_quality_is_visible_in_candidate_table(self):
+        self.window.records = {
+            "7681538825608236331": {
+                "download": "已下载",
+                "metadata": {
+                    "width": 1080,
+                    "height": 1920,
+                    "frame_rate": 30,
+                    "total_bitrate_bps": 4_800_000,
+                    "video_codec": "h264",
+                    "file_size_bytes": 12 * 1048576,
+                },
+            },
+        }
+
+        self.window.refresh_table()
+
+        self.assertEqual(self.window.table.horizontalHeaderItem(6).text(), "视频信息")
+        quality = self.window.table.item(0, 6).text()
+        self.assertIn("1080×1920", quality)
+        self.assertIn("4.80 Mbps", quality)
+        self.assertIn("30fps", quality)
+
     def test_batch_selection_supports_first_n_invert_and_to_end(self):
         for offset in range(1, 5):
             video_id = str(7681538825608236331 + offset)
