@@ -973,27 +973,8 @@ class PlatformPage(QWidget):
             QTimer.singleShot(delay, lambda: self._run_platform_fill(batch, attempt + 1))
             return
         if result.get('ok') and result.get('code') == 'FILE_INPUT_READY' and (self.browser or self.edge_target_ws_url):
-            paths = [item['upload_path'] for item in batch['items']]
-            self.status.setText('页面字段已填写，正在选择视频文件…')
-            if self.browser:
-                platform_url = str(self.config.get('platform_url', self.address.text())).strip()
-                ws_url = lambda: find_page_ws_url(
-                    platform_url,
-                    self.internal_browser_debug_port,
-                )
-            else:
-                ws_url = lambda: self.edge_target_ws_url
-            self.edge_files_task = Background(
-                lambda: set_edge_file_input(
-                    ws_url(),
-                    build_upload_file_input_script(),
-                    paths,
-                ),
-                self,
-            )
-            self.edge_files_task.result.connect(self._edge_files_selected)
-            self.edge_files_task.failed.connect(self._edge_files_failed)
-            self.edge_files_task.start()
+            self.status.setText('页面字段已填写，等待平台文件控件稳定…')
+            QTimer.singleShot(800, lambda: self._start_platform_file_selection(batch, 0))
             return
         self.fill_button.setEnabled(True)
         if result.get('ok'):
@@ -1001,6 +982,49 @@ class PlatformPage(QWidget):
             self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
         else:
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
+
+    def _start_platform_file_selection(self, batch, attempt):
+        paths = [item['upload_path'] for item in batch['items']]
+        self.status.setText(
+            '正在选择视频文件…'
+            if attempt == 0 else f'文件控件已刷新，正在第 {attempt + 1} 次重试…'
+        )
+
+        def select_files():
+            if self.browser:
+                platform_url = str(
+                    self.config.get('platform_url', self.address.text())
+                ).strip()
+                ws_url = find_page_ws_url(
+                    platform_url,
+                    self.internal_browser_debug_port,
+                )
+            else:
+                ws_url = self.edge_target_ws_url
+            return set_edge_file_input(
+                ws_url,
+                build_upload_file_input_script(),
+                paths,
+            )
+
+        self.edge_files_task = Background(select_files, self)
+        self.edge_files_task.result.connect(self._edge_files_selected)
+        self.edge_files_task.failed.connect(
+            lambda message: self._platform_file_selection_failed(
+                batch, attempt, message
+            )
+        )
+        self.edge_files_task.start()
+
+    def _platform_file_selection_failed(self, batch, attempt, message):
+        if attempt < 2:
+            self.status.setText('平台文件控件发生刷新，稍后自动重试…')
+            QTimer.singleShot(
+                800,
+                lambda: self._start_platform_file_selection(batch, attempt + 1),
+            )
+            return
+        self._edge_files_failed(message)
 
     def _edge_files_selected(self, result):
         self.fill_button.setEnabled(True)
