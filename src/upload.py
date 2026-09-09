@@ -175,6 +175,7 @@ def enhance_selected_bitrates(
     item_completed=None,
     item_failed=None,
     item_started=None,
+    item_phase=None,
     should_stop=None,
 ):
     output_folder = Path(output_folder)
@@ -211,7 +212,14 @@ def enhance_selected_bitrates(
             continue
         target = output_folder / f"{safe_filename_part(video_id)}.mp4"
         try:
-            metadata = transcode_for_upload_bitrate(source, target)
+            if item_phase:
+                metadata = transcode_for_upload_bitrate(
+                    source,
+                    target,
+                    progress=lambda phase: item_phase(video_id, phase),
+                )
+            else:
+                metadata = transcode_for_upload_bitrate(source, target)
         except Exception as exc:
             if item_failed:
                 item_failed(video_id, exc)

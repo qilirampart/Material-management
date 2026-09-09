@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.media import (
     describe_bitrate,
@@ -14,6 +15,25 @@ from src.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch("src.media.validate_video")
+    @patch("src.media.run")
+    @patch("src.media.probe")
+    def test_bitrate_transcode_reports_encoding_and_validation_phases(
+        self, probe_video, run_ffmpeg, validate_video
+    ):
+        probe_video.return_value = {"duration": 10}
+        validate_video.return_value = {"video_bitrate_bps": 4_200_000}
+        phases = []
+        with tempfile.TemporaryDirectory() as folder:
+            transcode_for_upload_bitrate(
+                Path(folder) / "source.mp4",
+                Path(folder) / "output.mp4",
+                progress=phases.append,
+            )
+
+        self.assertEqual(phases, ["encoding", "validating"])
+        run_ffmpeg.assert_called_once()
+
     def test_probe_reports_download_quality_information(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "quality.mp4"

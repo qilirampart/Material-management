@@ -83,6 +83,13 @@ def enhance_batch_bitrates(batch_folder, records, video_ids, progress=None, shou
                 'total': total,
             })
 
+    def item_phase(video_id, phase):
+        if progress:
+            progress({
+                'phase': phase,
+                'video_id': video_id,
+            })
+
     updates = enhance_selected_bitrates(
         durable_records,
         video_ids,
@@ -90,6 +97,7 @@ def enhance_batch_bitrates(batch_folder, records, video_ids, progress=None, shou
         item_completed=persist_item,
         item_failed=record_failure,
         item_started=item_started,
+        item_phase=item_phase if progress else None,
         should_stop=should_stop,
     )
     return {
@@ -808,7 +816,14 @@ class MainWindow(QMainWindow):
         self.bitrate_task.start()
 
     def show_bitrate_progress(self, event):
-        if event.get('phase') != 'started':
+        phase = event.get('phase')
+        if phase in {'encoding', 'validating'}:
+            phase_text = '正在编码达标副本' if phase == 'encoding' else '正在完整复检输出文件'
+            self.work_detail.setText(
+                f"{event.get('video_id', '')}\n{phase_text}"
+            )
+            return
+        if phase != 'started':
             return
         index = int(event.get('index', 0))
         total = max(1, int(event.get('total', 1)))

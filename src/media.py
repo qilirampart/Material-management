@@ -127,6 +127,7 @@ def transcode_for_upload_bitrate(
     *,
     target_kbps=TARGET_UPLOAD_BITRATE_KBPS,
     minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS,
+    progress=None,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -135,6 +136,8 @@ def transcode_for_upload_bitrate(
     output_path.unlink(missing_ok=True)
     timeout = max(600, round(source_metadata["duration"] * 6))
     try:
+        if progress:
+            progress('encoding')
         run([
             "ffmpeg", "-y", "-v", "error", "-i", str(source_path),
             "-map", "0:v:0", "-map", "0:a?",
@@ -146,6 +149,8 @@ def transcode_for_upload_bitrate(
             "-x264-params", "nal-hrd=cbr:filler=1",
             "-c:a", "copy", "-movflags", "+faststart", str(output_path),
         ], timeout=timeout)
+        if progress:
+            progress('validating')
         metadata = validate_video(output_path)
         if effective_video_bitrate_bps(metadata) <= minimum_kbps * 1000:
             raise FFmpegError(
