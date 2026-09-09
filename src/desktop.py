@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.batch import LABELS, read_input, save_json, export_report
-from src.media import describe_video
+from src.media import describe_bitrate, describe_video
 from src.paths import RESOURCE_ROOT, DATA_ROOT, prepare_environment
 from src.vision import PHRASES, load_profile, fingerprint
 from src.desktop_widgets import button, title, local_open, SettingsPage, ReviewPage, PlatformPage
@@ -192,6 +192,7 @@ class MainWindow(QMainWindow):
             '勾选', '编号', '视频 ID', '素材', '原视频链接',
             '下载状态', '视频信息', '检测状态', '命中项 / 提示', '人工备注',
         ])
+        self.table.horizontalHeaderItem(6).setText('码率 / 视频信息')
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -201,6 +202,7 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(55)
         for index, width in enumerate([78, 62, 190, 158, 300, 90, 250, 138, 150, 130]):
             self.table.setColumnWidth(index, width)
+        self.table.horizontalHeader().moveSection(6, 4)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_selected())
         self.table.itemChanged.connect(self.check_changed)
@@ -487,7 +489,10 @@ class MainWindow(QMainWindow):
                 str(source.get("剧名") or ""),
                 original_url,
                 record.get("download", "待下载"),
-                describe_video(record.get("metadata")),
+                " | ".join(filter(None, [
+                    describe_bitrate(record.get("metadata")),
+                    describe_video(record.get("metadata")),
+                ])),
                 label,
                 hints,
                 self.notes.get(id_, {}).get("note", ""),
@@ -514,6 +519,10 @@ class MainWindow(QMainWindow):
                     cell.setFont(font)
                 if col in (1, 2):
                     cell.setTextAlignment(Qt.AlignCenter)
+                if col == 6:
+                    cell.setForeground(QColor(
+                        '#116d62' if '达标' in value else '#b94035' if '不足' in value else '#64727b'
+                    ))
                 if col == 7:
                     cell.setForeground(QColor({"blocked": "#b94035", "sample_clear": "#116d62", "pending": "#64727b"}.get(status, "#986016")))
             if id_ in selected:

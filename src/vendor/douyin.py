@@ -944,7 +944,7 @@ class DouyinDownloadService:
             ) from exc
 
     def _extract_video_urls(self, payload: Any) -> list[str]:
-        candidates: list[tuple[int, str]] = []
+        candidates: list[tuple[float, int, str]] = []
         for key_path, value in self._walk(payload):
             if not isinstance(value, str):
                 continue
@@ -953,20 +953,83 @@ class DouyinDownloadService:
                 continue
             score = self._score_candidate(key_path, url)
             if score > 0:
-                candidates.append((score, url))
+                quality = self._candidate_quality_hint(payload, key_path, url)
+                candidates.append((quality, score, url))
 
         if not candidates:
             raise DouyinDownloadError("解析结果中没有找到可用的视频直链。")
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         ordered_urls: list[str] = []
         seen: set[str] = set()
-        for _, url in candidates:
+        for _, _, url in candidates:
             if url in seen:
                 continue
             seen.add(url)
             ordered_urls.append(url)
         return ordered_urls
+
+    @classmethod
+    def _candidate_quality_hint(
+        cls,
+        payload: Any,
+        key_path: tuple[str, ...],
+        url: str,
+    ) -> float:
+        current = payload
+        ancestors: list[Any] = [payload]
+        for token in key_path[:-1]:
+            try:
+                current = current[int(token)] if isinstance(current, list) else current[token]
+            except (IndexError, KeyError, TypeError, ValueError):
+                break
+            ancestors.append(current)
+
+        for value in reversed(ancestors):
+            if not isinstance(value, dict):
+                continue
+            hint = cls._mapping_quality_hint(value)
+            if hint > 0:
+                return hint
+        return cls._text_quality_hint(url)
+
+    @classmethod
+    def _mapping_quality_hint(cls, value: dict[str, Any]) -> float:
+        bitrate = 0.0
+        width = 0.0
+        height = 0.0
+        text_hint = 0.0
+        for key, raw in value.items():
+            lowered = str(key).lower().replace("-", "_")
+            if lowered in {"bit_rate", "bitrate", "video_bitrate", "data_rate"}:
+                try:
+                    number = float(raw)
+                except (TypeError, ValueError):
+                    number = 0.0
+                bitrate = max(bitrate, number / 1000 if number > 100_000 else number)
+            elif lowered in {"width", "video_width"}:
+                try:
+                    width = max(width, float(raw))
+                except (TypeError, ValueError):
+                    pass
+            elif lowered in {"height", "video_height"}:
+                try:
+                    height = max(height, float(raw))
+                except (TypeError, ValueError):
+                    pass
+            elif lowered in {"gear_name", "quality", "quality_type", "resolution", "ratio"}:
+                text_hint = max(text_hint, cls._text_quality_hint(str(raw)))
+        resolution_hint = width * height / 1000 if width and height else 0.0
+        return max(bitrate, resolution_hint, text_hint)
+
+    @staticmethod
+    def _text_quality_hint(value: str) -> float:
+        text = str(value).lower()
+        dimensions = re.search(r"(\d{3,4})\s*[x×]\s*(\d{3,4})", text)
+        if dimensions:
+            return int(dimensions.group(1)) * int(dimensions.group(2)) / 1000
+        progressive = re.search(r"(?<!\d)(\d{3,4})p(?!\d)", text)
+        return float(progressive.group(1)) if progressive else 0.0
 
     def _extract_text(self, payload: Any, preferred_keys: tuple[str, ...]) -> str | None:
         for key_path, value in self._walk(payload):

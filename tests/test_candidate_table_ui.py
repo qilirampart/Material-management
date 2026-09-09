@@ -79,8 +79,10 @@ class CandidateTableUiTests(unittest.TestCase):
 
         self.window.refresh_table()
 
-        self.assertEqual(self.window.table.horizontalHeaderItem(6).text(), "视频信息")
+        self.assertEqual(self.window.table.horizontalHeaderItem(6).text(), "码率 / 视频信息")
+        self.assertEqual(self.window.table.horizontalHeader().visualIndex(6), 4)
         quality = self.window.table.item(0, 6).text()
+        self.assertIn("总 4,800 kbps · 达标", quality)
         self.assertIn("1080×1920", quality)
         self.assertIn("4.80 Mbps", quality)
         self.assertIn("30fps", quality)

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.media import describe_video, extract_frames, run, validate_video
+from src.media import describe_bitrate, describe_video, extract_frames, run, validate_video
 
 
 class MediaTests(unittest.TestCase):
@@ -25,6 +25,16 @@ class MediaTests(unittest.TestCase):
             self.assertIn("160×240", description)
             self.assertIn("Mbps", description)
             self.assertIn("H264", description)
+
+    def test_bitrate_description_uses_video_stream_and_3500_kbps_threshold(self):
+        self.assertEqual(
+            describe_bitrate({"video_bitrate_bps": 4_100_000, "total_bitrate_bps": 4_300_000}),
+            "视频 4,100 kbps · 达标",
+        )
+        self.assertEqual(
+            describe_bitrate({"video_bitrate_bps": 3_500_000, "total_bitrate_bps": 3_700_000}),
+            "视频 3,500 kbps · 不足 3500",
+        )
 
     def test_first_frame_and_one_second_intervals(self):
         with tempfile.TemporaryDirectory() as folder:

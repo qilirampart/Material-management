@@ -10,6 +10,9 @@ class FFmpegError(RuntimeError):
     pass
 
 
+MINIMUM_VIDEO_BITRATE_KBPS = 3500
+
+
 def _number(value, default=0.0):
     try:
         return float(value)
@@ -47,6 +50,20 @@ def describe_video(metadata):
     if size:
         parts.append(f"{size / 1048576:.1f} MB")
     return " · ".join(parts)
+
+
+def describe_bitrate(metadata, minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS):
+    if not isinstance(metadata, dict) or not metadata:
+        return "待检测"
+    video_bitrate = _number(metadata.get("video_bitrate_bps"))
+    total_bitrate = _number(metadata.get("total_bitrate_bps"))
+    bitrate = video_bitrate or total_bitrate
+    if bitrate <= 0:
+        return "未读取到码率"
+    kbps = bitrate / 1000
+    source = "视频" if video_bitrate else "总"
+    result = "达标" if kbps > minimum_kbps else f"不足 {minimum_kbps}"
+    return f"{source} {kbps:,.0f} kbps · {result}"
 
 
 def run(command, timeout=180):
