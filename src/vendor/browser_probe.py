@@ -4,6 +4,7 @@ import json
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWidgets import QApplication
@@ -63,6 +64,7 @@ class _DouyinBrowserProbe(QObject):
         self._page_url = ""
         self._title = ""
         self._source = "browser"
+        self._video_candidates: set[str] = set()
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(600)
@@ -154,7 +156,7 @@ class _DouyinBrowserProbe(QObject):
               }
               const resources = performance.getEntriesByType("resource")
                 .map((entry) => entry.name || "")
-                .filter((url) => /douyinvod\.com|mime_type=(video|audio)|media-audio/i.test(url));
+                .filter((url) => /douyinvod\.com|mime_type=(video|audio)|media-audio|aweme\/v1\/play/i.test(url));
               return {
                 pageUrl: location.href || "",
                 title: document.title || "",
@@ -180,7 +182,8 @@ class _DouyinBrowserProbe(QObject):
             self._finish_when_complete()
             return
         if looks_like_media_url(media_url):
-            self._video_url = media_url
+            self._video_candidates.add(media_url)
+            self._video_url = max(self._video_candidates, key=media_url_quality_score)
             self._page_url = self._page.url().toString().strip() if self._page is not None else self._url
             self._title = self._page.title().strip() if self._page is not None else ""
             self._source = "network"
@@ -196,33 +199,22 @@ class _DouyinBrowserProbe(QObject):
             resource_url = str(resource_url or "").strip()
             if looks_like_audio_url(resource_url):
                 self._audio_url = resource_url
-            elif looks_like_media_url(resource_url) and not self._video_url:
-                self._video_url = resource_url
+            elif looks_like_media_url(resource_url):
+                self._video_candidates.add(resource_url)
         videos = payload.get("videos") or []
         if not isinstance(videos, list):
             return
 
-        candidates: list[tuple[int, str]] = []
         for video in videos:
             if not isinstance(video, dict):
                 continue
             media_url = str(video.get("mediaUrl") or "").strip()
             if not looks_like_media_url(media_url):
                 continue
-            score = 0
-            if int(video.get("readyState") or 0) >= 2:
-                score += 10
-            if float(video.get("duration") or 0) > 0:
-                score += 10
-            if int(video.get("width") or 0) > 0 and int(video.get("height") or 0) > 0:
-                score += 10
-            if "douyinvod.com" in media_url.lower():
-                score += 20
-            candidates.append((score, media_url))
+            self._video_candidates.add(media_url)
 
-        if candidates:
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            self._video_url = candidates[0][1]
+        if self._video_candidates:
+            self._video_url = max(self._video_candidates, key=media_url_quality_score)
             self._source = "dom"
         if page_url:
             self._page_url = page_url
@@ -233,10 +225,8 @@ class _DouyinBrowserProbe(QObject):
     def _finish_when_complete(self) -> None:
         if not self._video_url:
             return
-        if self._audio_url:
-            self._finish_collected_streams()
-            return
-        # Give the player a short opportunity to request the separate audio stream.
+        # Give the player time to expose its full-play and adaptive variants before
+        # selecting a URL. The first requested stream is often a low-bitrate preview.
         if not self._settle_timer.isActive():
             self._settle_timer.start(2200)
 
@@ -307,9 +297,32 @@ def looks_like_media_url(url: str) -> bool:
         return False
     if "douyinvod.com" in lowered_url:
         return True
+    parts = urlsplit(lowered_url)
+    query = parse_qs(parts.query)
+    if "/aweme/v1/play/" in parts.path and (
+        query.get("is_play_url") == ["1"] or bool(query.get("video_id"))
+    ):
+        return True
     if "mime_type=video" in lowered_url or "video_mp4" in lowered_url or "__vid=" in lowered_url:
         return True
     return False
+
+
+def media_url_quality_score(url: str) -> float:
+    parts = urlsplit(url)
+    query = parse_qs(parts.query)
+    try:
+        bitrate = float((query.get("br") or query.get("bt") or [0])[0])
+    except (TypeError, ValueError):
+        bitrate = 0.0
+    score = bitrate
+    if query.get("is_play_url") == ["1"]:
+        score += 1000
+    if query.get("target"):
+        score += 1000
+    if query.get("downgrade_264") == ["1"]:
+        score += 250
+    return score
 
 
 def looks_like_audio_url(url: str) -> bool:
