@@ -216,6 +216,44 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertIn("upload.mp4", page.status.text())
             page.deleteLater()
 
+    @patch("src.desktop_widgets.find_page_ws_url", return_value="ws://software-browser")
+    @patch(
+        "src.desktop_widgets.set_edge_file_input",
+        return_value={
+            "input_count": 1,
+            "plugin_count": 1,
+            "preview_count": 1,
+            "video_preview_count": 1,
+            "names": ["upload.mp4"],
+        },
+    )
+    def test_software_browser_session_uses_cdp_to_select_files(self, set_files, find_page):
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / "upload.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "internal_browser_debug_port": 9233,
+            })
+            page.browser = object()
+            batch = {"index": 1, "items": [{"upload_path": str(video)}]}
+
+            page._platform_fill_finished(
+                batch,
+                2,
+                {"ok": True, "code": "FILE_INPUT_READY", "message": "ready"},
+            )
+            for _ in range(100):
+                if "upload.mp4" in page.status.text():
+                    break
+                QTest.qWait(10)
+
+            find_page.assert_called_once_with("https://market.wuread.cn/market-admin/", 9233)
+            set_files.assert_called_once()
+            self.assertIn("upload.mp4", page.status.text())
+            page.browser = None
+            page.deleteLater()
+
     def test_new_material_batch_requires_explicit_history_or_platform_selection(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -5,6 +5,23 @@ import json
 from src.upload import FIXED_DEPARTMENTS
 
 
+def build_json_result_script(script: str) -> str:
+    """Serialize page-script results for Qt versions that cannot convert JS objects."""
+    return f"JSON.stringify({script})"
+
+
+def parse_json_result(value):
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def build_read_upload_selection_script():
     return """(() => {
   const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
@@ -79,7 +96,7 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
     const openButton = [...main.querySelectorAll('button,a')]
       .find(element => element.innerText.trim() === '上传素材');
     if (!openButton) return {{ok:false, code:'UPLOAD_ENTRY_MISSING', message:'未找到上传素材入口'}};
-    openButton.click();
+    setTimeout(() => openButton.click(), 0);
     return {{ok:false, code:'OPENING_FORM', message:'正在打开上传表单'}};
   }}
   const doc = uploadFrame.contentDocument;
@@ -94,8 +111,10 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
     const element = [...doc.querySelectorAll(`input[type=radio][name="${{name}}"]`)]
       .find(item => item.value === value);
     if (!element) throw new Error(`字段不存在：${{name}}=${{value}}`);
+    if (element.checked) return false;
     element.checked = true;
     dispatch(element);
+    return true;
   }};
   const setXm = (name, values, additions=[]) => {{
     const select = doc.querySelector(`[xm-select="${{name}}"]`);
@@ -107,16 +126,38 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
     api.render(name);
     api.value(name, values, true);
   }};
+  const selectedValues = name => (api.value(name, 'val') || []).map(String);
+  const selectRemoteBook = () => {{
+    if (selectedValues('bookIdSelect').includes(data.dramaId)) return true;
+    api.value('bookIdSelect', [data.dramaId], true);
+    if (selectedValues('bookIdSelect').includes(data.dramaId)) return true;
+    const parent = doc.querySelector('.xm-select-parent[fs_id="bookIdSelect"]');
+    const input = parent?.querySelector('.xm-select-input');
+    if (!parent || !input) throw new Error('未找到建议书籍/短剧搜索框');
+    const keyword = data.dramaName || data.dramaId;
+    parent.querySelector('.xm-select')?.click();
+    input.value = keyword;
+    dispatch(input);
+    return false;
+  }};
   try {{
     const sourceType = doc.querySelector('#sourceType');
-    sourceType.value = 'video';
-    dispatch(sourceType);
+    if (sourceType.value !== 'video') {{
+      win.setTimeout(() => {{
+        sourceType.value = 'video';
+        dispatch(sourceType);
+      }}, 0);
+      return {{ok:false, code:'SOURCE_TYPE_CHANGING', message:'正在切换为视频素材'}};
+    }}
     radio('propertiesFirst', '原创');
     setXm('sponsorSelect', ['张雯燕']);
     setXm('directorSelect', [data.director]);
     radio('secondLevelLabel_2', '短剧');
-    radio('adTargetType', 'play');
-    setXm('bookIdSelect', [data.dramaId], [{{name:data.dramaName, value:data.dramaId}}]);
+    const targetChanged = radio('adTargetType', 'play');
+    if (targetChanged)
+      win.MaterialInfoDlg?.onChangeAdTargetType?.(false);
+    if (!selectRemoteBook())
+      return {{ok:false, code:'BOOK_SEARCH_STARTED', message:'正在使用平台搜索建议短剧'}};
     radio('appName', '-1');
     radio('payFlag', '1');
     radio('viewRange', '1');

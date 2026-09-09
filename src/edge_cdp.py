@@ -223,6 +223,24 @@ def edge_targets(port: int = 9222) -> list[dict]:
         return json.load(response)
 
 
+def find_page_ws_url(url_prefix: str, port: int, attempts: int = 20) -> str:
+    for _ in range(max(1, int(attempts))):
+        try:
+            targets = edge_targets(port)
+        except OSError:
+            targets = []
+        matches = [
+            item for item in targets
+            if item.get("type") == "page"
+            and str(item.get("url", "")).startswith(str(url_prefix))
+            and item.get("webSocketDebuggerUrl")
+        ]
+        if matches:
+            return str(matches[0]["webSocketDebuggerUrl"])
+        time.sleep(0.1)
+    raise RuntimeError("未找到软件内置浏览器的平台页面。")
+
+
 def edge_target_ids(port: int = 9222) -> set[str]:
     return {str(item.get("id")) for item in edge_targets(port) if item.get("id")}
 

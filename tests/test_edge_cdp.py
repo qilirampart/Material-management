@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from src.edge_cdp import (
     edge_target_ids,
     evaluate_edge_page,
+    find_page_ws_url,
     fit_new_edge_page,
     navigate_edge_page,
     set_edge_file_input,
@@ -12,6 +13,22 @@ from src.edge_cdp import (
 
 
 class EdgeCdpTests(unittest.TestCase):
+    @patch("src.edge_cdp.edge_targets")
+    def test_finds_software_browser_page_by_platform_url(self, targets):
+        targets.return_value = [
+            {"type": "page", "url": "https://other.test/", "webSocketDebuggerUrl": "ws://other"},
+            {
+                "type": "page",
+                "url": "https://market.wuread.cn/market-admin/",
+                "webSocketDebuggerUrl": "ws://software-browser",
+            },
+        ]
+
+        result = find_page_ws_url("https://market.wuread.cn/market-admin/", 9233)
+
+        self.assertEqual(result, "ws://software-browser")
+        targets.assert_called_once_with(9233)
+
     @patch("src.edge_cdp.websocket.create_connection")
     def test_reloads_edge_page(self, connect):
         socket = MagicMock()

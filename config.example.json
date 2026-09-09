@@ -7,6 +7,7 @@
   "platform_url": "https://market.wuread.cn/market-admin/",
   "edge_profile_path": "",
   "edge_debug_port": 9222,
+  "internal_browser_debug_port": 9233,
   "developer_edge_mode": false,
   "platform_browser_data_path": ""
 }

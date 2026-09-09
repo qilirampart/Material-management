@@ -2,13 +2,22 @@ import json
 import unittest
 
 from src.platform_bridge import (
+    build_json_result_script,
     build_read_upload_selection_script,
     build_upload_file_input_script,
     build_upload_form_script,
+    parse_json_result,
 )
 
 
 class PlatformBridgeTests(unittest.TestCase):
+    def test_qt_browser_result_is_json_serialized_and_parsed(self):
+        script = "(() => ({ok:true, code:'READY'}))()"
+
+        self.assertEqual(build_json_result_script(script), f"JSON.stringify({script})")
+        self.assertEqual(parse_json_result('{"ok":true,"code":"READY"}'), {"ok": True, "code": "READY"})
+        self.assertEqual(parse_json_result(""), {})
+
     def test_read_script_extracts_platform_director_and_drama_selection(self):
         script = build_read_upload_selection_script()
 
@@ -36,6 +45,10 @@ class PlatformBridgeTests(unittest.TestCase):
         self.assertIn("sponsorSelect", script)
         self.assertIn("deptSelect", script)
         self.assertIn("bookIdSelect", script)
+        self.assertIn("BOOK_SEARCH_STARTED", script)
+        self.assertIn("SOURCE_TYPE_CHANGING", script)
+        self.assertIn("xm-select-input", script)
+        self.assertIn("onChangeAdTargetType", script)
         self.assertNotIn("#ensure", script)
         self.assertNotIn("提交审核", script)
         self.assertNotIn("保存草稿", script)

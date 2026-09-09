@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
@@ -18,6 +19,7 @@ from src.browser_session import configure_persistent_profile, platform_browser_r
 from src.edge_cdp import (
     edge_target_ids,
     evaluate_edge_page,
+    find_page_ws_url,
     fit_new_edge_page,
     navigate_edge_page,
     set_edge_file_input,
@@ -32,9 +34,11 @@ from src.edge_session import (
     release_edge_input,
 )
 from src.platform_bridge import (
+    build_json_result_script,
     build_read_upload_selection_script,
     build_upload_file_input_script,
     build_upload_form_script,
+    parse_json_result,
 )
 from src.upload import (
     build_upload_plan,
@@ -467,6 +471,15 @@ class PlatformPage(QWidget):
         self.edge_window_handle = None
         self.edge_previous_targets = set()
         self.edge_target_ws_url = None
+        try:
+            self.internal_browser_debug_port = int(
+                os.environ.get(
+                    'QTWEBENGINE_REMOTE_DEBUGGING',
+                    config.get('internal_browser_debug_port', 9233),
+                )
+            )
+        except (TypeError, ValueError):
+            self.internal_browser_debug_port = 9233
         self.edge_zoom_task = None
         self.edge_navigation_task = None
         self.edge_focus_timer = QTimer(self)
@@ -756,7 +769,10 @@ class PlatformPage(QWidget):
         self.read_selection_button.setEnabled(False)
         self.status.setText('正在读取平台当前选择…')
         if self.browser:
-            self.browser.page().runJavaScript(script, self._platform_selection_finished)
+            self.browser.page().runJavaScript(
+                build_json_result_script(script),
+                lambda result: self._platform_selection_finished(parse_json_result(result)),
+            )
             return
         if self.edge_target_ws_url:
             self.selection_task = Background(
@@ -912,8 +928,6 @@ class PlatformPage(QWidget):
         if not all(Path(path).is_file() for path in paths):
             self.status.setText('上传暂存文件缺失，请重新生成批次')
             return
-        if self.browser:
-            self.upload_page.queue_files(paths)
         self.fill_button.setEnabled(False)
         self.status.setText(f"正在填写第 {batch['index']} 批 · {len(paths)} 条")
         self._run_platform_fill(batch, 0)
@@ -924,12 +938,14 @@ class PlatformPage(QWidget):
             drama_name=self.drama_name.text(),
             drama_platform_id=self.drama_id.currentText(),
             file_count=len(batch['items']),
-            request_file_dialog=bool(self.browser),
+            request_file_dialog=False,
         )
         if self.browser:
             self.browser.page().runJavaScript(
-                script,
-                lambda result: self._platform_fill_finished(batch, attempt, result),
+                build_json_result_script(script),
+                lambda result: self._platform_fill_finished(
+                    batch, attempt, parse_json_result(result)
+                ),
             )
             return
         self.edge_fill_task = Background(
@@ -944,16 +960,32 @@ class PlatformPage(QWidget):
 
     def _platform_fill_finished(self, batch, attempt, result):
         result = result if isinstance(result, dict) else {}
-        if result.get('code') == 'OPENING_FORM' and attempt < 5:
-            self.status.setText('已打开上传表单，等待页面控件加载…')
-            QTimer.singleShot(800, lambda: self._run_platform_fill(batch, attempt + 1))
+        if result.get('code') in {'OPENING_FORM', 'SOURCE_TYPE_CHANGING', 'BOOK_SEARCH_STARTED'} and attempt < 5:
+            if result.get('code') == 'BOOK_SEARCH_STARTED':
+                self.status.setText('正在使用平台搜索并选择建议短剧…')
+                delay = 1800
+            elif result.get('code') == 'SOURCE_TYPE_CHANGING':
+                self.status.setText('正在切换为视频素材并等待表单刷新…')
+                delay = 1000
+            else:
+                self.status.setText('已打开上传表单，等待页面控件加载…')
+                delay = 800
+            QTimer.singleShot(delay, lambda: self._run_platform_fill(batch, attempt + 1))
             return
-        if result.get('ok') and result.get('code') == 'FILE_INPUT_READY' and self.edge_target_ws_url:
+        if result.get('ok') and result.get('code') == 'FILE_INPUT_READY' and (self.browser or self.edge_target_ws_url):
             paths = [item['upload_path'] for item in batch['items']]
             self.status.setText('页面字段已填写，正在选择视频文件…')
+            if self.browser:
+                platform_url = str(self.config.get('platform_url', self.address.text())).strip()
+                ws_url = lambda: find_page_ws_url(
+                    platform_url,
+                    self.internal_browser_debug_port,
+                )
+            else:
+                ws_url = lambda: self.edge_target_ws_url
             self.edge_files_task = Background(
                 lambda: set_edge_file_input(
-                    self.edge_target_ws_url,
+                    ws_url(),
                     build_upload_file_input_script(),
                     paths,
                 ),
@@ -968,8 +1000,6 @@ class PlatformPage(QWidget):
             self.status.setText(result.get('message', '平台表单已填写'))
             self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
         else:
-            if self.browser:
-                self.upload_page.clear_queued_files()
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
 
     def _edge_files_selected(self, result):
@@ -996,31 +1026,18 @@ class PlatformPage(QWidget):
             QMessageBox.information(self, "平台地址待配置", "请在设置中填写公司平台地址。")
             return
         if self.browser is None:
+            os.environ.setdefault(
+                'QTWEBENGINE_REMOTE_DEBUGGING',
+                str(self.internal_browser_debug_port),
+            )
             from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
             from PySide6.QtWebEngineWidgets import QWebEngineView
-
-            class UploadPage(QWebEnginePage):
-                def __init__(self, profile, parent=None):
-                    super().__init__(profile, parent)
-                    self._queued_files = []
-
-                def queue_files(self, paths):
-                    self._queued_files = [str(Path(path).resolve()) for path in paths]
-
-                def clear_queued_files(self):
-                    self._queued_files = []
-
-                def chooseFiles(self, mode, old_files, accepted_mime_types):
-                    if self._queued_files:
-                        selected, self._queued_files = self._queued_files, []
-                        return selected
-                    return super().chooseFiles(mode, old_files, accepted_mime_types)
 
             self.profile = QWebEngineProfile("company-platform", self)
             folder = platform_browser_root(self.config)
             configure_persistent_profile(self.profile, folder)
             self.browser = QWebEngineView(self)
-            self.upload_page = UploadPage(self.profile, self.browser)
+            self.upload_page = QWebEnginePage(self.profile, self.browser)
             self.browser.setPage(self.upload_page)
             self.browser.setZoomFactor(0.67)
             self.browser.loadFinished.connect(self._platform_load_finished)
