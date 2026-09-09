@@ -14,6 +14,10 @@ class EdgeFileSelectionError(RuntimeError):
     user_safe = True
 
 
+class EdgeNavigationError(RuntimeError):
+    user_safe = True
+
+
 def _receive_response(socket, request_id: int):
     while True:
         response = json.loads(socket.recv())
@@ -41,6 +45,52 @@ def evaluate_edge_page(ws_url: str, expression: str):
             description = result.get("result", {}).get("description", "Edge 页面脚本执行失败。")
             raise RuntimeError(description)
         return result.get("result", {}).get("value")
+    finally:
+        socket.close()
+
+
+def navigate_edge_page(ws_url: str, action: str) -> dict:
+    if action not in {"back", "forward", "reload"}:
+        raise ValueError(f"Unsupported Edge navigation action: {action}")
+
+    socket = websocket.create_connection(ws_url, timeout=5, suppress_origin=True)
+    try:
+        if action == "reload":
+            socket.send(json.dumps({"id": 1, "method": "Page.reload", "params": {}}))
+            response = _receive_response(socket, 1)
+            if response.get("error"):
+                raise EdgeNavigationError(
+                    response["error"].get("message", "\u5237\u65b0 Edge \u9875\u9762\u5931\u8d25\u3002")
+                )
+            return {"ok": True, "action": action}
+
+        socket.send(json.dumps({"id": 1, "method": "Page.getNavigationHistory"}))
+        history_response = _receive_response(socket, 1)
+        if history_response.get("error"):
+            raise EdgeNavigationError(
+                history_response["error"].get("message", "\u65e0\u6cd5\u8bfb\u53d6 Edge \u6d4f\u89c8\u5386\u53f2\u3002")
+            )
+        history = history_response.get("result", {})
+        entries = history.get("entries", [])
+        current_index = int(history.get("currentIndex", -1))
+        target_index = current_index - 1 if action == "back" else current_index + 1
+        if target_index < 0 or target_index >= len(entries):
+            message = "\u5df2\u7ecf\u662f\u7b2c\u4e00\u9875" if action == "back" else "\u5df2\u7ecf\u662f\u6700\u540e\u4e00\u9875"
+            current_url = entries[current_index].get("url", "") if 0 <= current_index < len(entries) else ""
+            return {"ok": False, "action": action, "message": message, "url": current_url}
+
+        target = entries[target_index]
+        socket.send(json.dumps({
+            "id": 2,
+            "method": "Page.navigateToHistoryEntry",
+            "params": {"entryId": target["id"]},
+        }))
+        navigate_response = _receive_response(socket, 2)
+        if navigate_response.get("error"):
+            raise EdgeNavigationError(
+                navigate_response["error"].get("message", "Edge \u9875\u9762\u8df3\u8f6c\u5931\u8d25\u3002")
+            )
+        return {"ok": True, "action": action, "url": str(target.get("url", ""))}
     finally:
         socket.close()
 

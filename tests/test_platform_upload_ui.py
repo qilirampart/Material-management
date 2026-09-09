@@ -65,6 +65,25 @@ class PlatformUploadUiTests(unittest.TestCase):
         self.assertEqual(child.y(), 134)
         stage.deleteLater()
 
+    @patch(
+        "src.desktop_widgets.navigate_edge_page",
+        return_value={"ok": True, "action": "reload"},
+    )
+    def test_navigation_toolbar_refreshes_embedded_edge(self, navigate):
+        page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/login"})
+        page.edge_target_ws_url = "ws://edge-page"
+
+        QTest.mouseClick(page.reload_button, Qt.LeftButton)
+        for _ in range(100):
+            if navigate.called and "\u5df2\u5237\u65b0" in page.status.text():
+                break
+            QTest.qWait(10)
+
+        navigate.assert_called_once_with("ws://edge-page", "reload")
+        self.assertIn("\u5df2\u5237\u65b0", page.status.text())
+        self.assertTrue(page.reload_button.isEnabled())
+        page.deleteLater()
+
     def test_ineligible_material_is_not_added_to_upload_queue(self):
         page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})
         rows = [{"video_id": "1", "input_error": "", "source": {"剧名": "测试"}}]

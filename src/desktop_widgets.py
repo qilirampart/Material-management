@@ -15,7 +15,13 @@ from PySide6.QtWidgets import (
 
 from src.paths import RESOURCE_ROOT, DATA_ROOT
 from src.browser_session import configure_persistent_profile, platform_browser_root
-from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page, set_edge_file_input
+from src.edge_cdp import (
+    edge_target_ids,
+    evaluate_edge_page,
+    fit_new_edge_page,
+    navigate_edge_page,
+    set_edge_file_input,
+)
 from src.edge_session import (
     edge_window_bounds,
     find_embeddable_edge_window,
@@ -462,6 +468,7 @@ class PlatformPage(QWidget):
         self.edge_previous_targets = set()
         self.edge_target_ws_url = None
         self.edge_zoom_task = None
+        self.edge_navigation_task = None
         self.edge_focus_timer = QTimer(self)
         self.edge_focus_timer.setInterval(15)
         self.edge_focus_timer.timeout.connect(self._sync_edge_input_focus)
@@ -485,9 +492,12 @@ class PlatformPage(QWidget):
         body = QHBoxLayout()
         browser_card, box = card()
         row = QHBoxLayout()
-        row.addWidget(button('←', lambda: self.browser.back() if self.browser else None))
-        row.addWidget(button('→', lambda: self.browser.forward() if self.browser else None))
-        row.addWidget(button('刷新', lambda: self.browser.reload() if self.browser else None))
+        self.back_button = button('←', lambda: self.navigate_platform('back'))
+        self.forward_button = button('→', lambda: self.navigate_platform('forward'))
+        self.reload_button = button('刷新', lambda: self.navigate_platform('reload'))
+        row.addWidget(self.back_button)
+        row.addWidget(self.forward_button)
+        row.addWidget(self.reload_button)
         self.address = QLineEdit(config.get('platform_url', ''))
         self.address.setPlaceholderText('请输入公司平台地址')
         self.address.returnPressed.connect(self.open_platform)
@@ -546,6 +556,54 @@ class PlatformPage(QWidget):
         box.addWidget(label('只完成文件选择与页面填写，不保存草稿，不提交审核。'))
         body.addWidget(preparation)
         layout.addLayout(body, 1)
+
+    def navigate_platform(self, action):
+        if self.browser:
+            {
+                'back': self.browser.back,
+                'forward': self.browser.forward,
+                'reload': self.browser.reload,
+            }[action]()
+            return
+        if not self.edge_target_ws_url:
+            self.status.setText('\u8bf7\u5148\u6253\u5f00\u5e73\u53f0')
+            return
+        self._set_navigation_enabled(False)
+        self.status.setText({
+            'back': '\u6b63\u5728\u8fd4\u56de\u4e0a\u4e00\u9875\u2026',
+            'forward': '\u6b63\u5728\u524d\u5f80\u4e0b\u4e00\u9875\u2026',
+            'reload': '\u6b63\u5728\u5237\u65b0\u5e73\u53f0\u9875\u9762\u2026',
+        }[action])
+        self.edge_navigation_task = Background(
+            lambda: navigate_edge_page(self.edge_target_ws_url, action),
+            self,
+        )
+        self.edge_navigation_task.result.connect(self._edge_navigation_finished)
+        self.edge_navigation_task.failed.connect(self._edge_navigation_failed)
+        self.edge_navigation_task.finished.connect(lambda: self._set_navigation_enabled(True))
+        self.edge_navigation_task.start()
+
+    def _set_navigation_enabled(self, enabled):
+        self.back_button.setEnabled(enabled)
+        self.forward_button.setEnabled(enabled)
+        self.reload_button.setEnabled(enabled)
+
+    def _edge_navigation_finished(self, result):
+        result = result if isinstance(result, dict) else {}
+        if result.get('url'):
+            self.address.setText(str(result['url']))
+        if not result.get('ok'):
+            self.status.setText(result.get('message', '\u65e0\u6cd5\u5207\u6362\u5e73\u53f0\u9875\u9762'))
+            return
+        action_text = {
+            'back': '\u5df2\u8fd4\u56de\u4e0a\u4e00\u9875',
+            'forward': '\u5df2\u524d\u5f80\u4e0b\u4e00\u9875',
+            'reload': '\u5e73\u53f0\u9875\u9762\u5df2\u5237\u65b0',
+        }
+        self.status.setText(action_text.get(result.get('action'), '\u5e73\u53f0\u9875\u9762\u5df2\u66f4\u65b0'))
+
+    def _edge_navigation_failed(self, message):
+        self.status.setText(f'\u5e73\u53f0\u9875\u9762\u64cd\u4f5c\u5931\u8d25\uff1a{message}')
 
     def open_edge_session(self):
         if self.edge_container is not None:

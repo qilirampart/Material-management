@@ -2,10 +2,68 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.edge_cdp import edge_target_ids, evaluate_edge_page, fit_new_edge_page, set_edge_file_input
+from src.edge_cdp import (
+    edge_target_ids,
+    evaluate_edge_page,
+    fit_new_edge_page,
+    navigate_edge_page,
+    set_edge_file_input,
+)
 
 
 class EdgeCdpTests(unittest.TestCase):
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_reloads_edge_page(self, connect):
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({"id": 1, "result": {}})
+        connect.return_value = socket
+
+        result = navigate_edge_page("ws://page", "reload")
+
+        self.assertEqual(result, {"ok": True, "action": "reload"})
+        payload = json.loads(socket.send.call_args.args[0])
+        self.assertEqual(payload["method"], "Page.reload")
+        socket.close.assert_called_once()
+
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_navigates_to_previous_edge_history_entry(self, connect):
+        socket = MagicMock()
+        socket.recv.side_effect = [
+            json.dumps({"id": 1, "result": {
+                "currentIndex": 1,
+                "entries": [
+                    {"id": 10, "url": "https://example.test/first"},
+                    {"id": 11, "url": "https://example.test/second"},
+                ],
+            }}),
+            json.dumps({"id": 2, "result": {}}),
+        ]
+        connect.return_value = socket
+
+        result = navigate_edge_page("ws://page", "back")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["url"], "https://example.test/first")
+        payloads = [json.loads(call.args[0]) for call in socket.send.call_args_list]
+        self.assertEqual(payloads[0]["method"], "Page.getNavigationHistory")
+        self.assertEqual(payloads[1]["method"], "Page.navigateToHistoryEntry")
+        self.assertEqual(payloads[1]["params"]["entryId"], 10)
+
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_reports_when_edge_has_no_previous_history_entry(self, connect):
+        socket = MagicMock()
+        socket.recv.return_value = json.dumps({"id": 1, "result": {
+            "currentIndex": 0,
+            "entries": [{"id": 10, "url": "https://example.test/first"}],
+        }})
+        connect.return_value = socket
+
+        result = navigate_edge_page("ws://page", "back")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["url"], "https://example.test/first")
+        self.assertEqual(socket.send.call_count, 1)
+
     @patch("src.edge_cdp.websocket.create_connection")
     def test_evaluates_script_and_returns_serialized_value(self, connect):
         socket = MagicMock()
