@@ -360,6 +360,30 @@ class MainWindow(QMainWindow):
         self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
         self.bitrate_button.setEnabled(bool(self.checked) and not self.is_running())
 
+    def sync_selection_cells(self):
+        self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
+        for index, row in enumerate(self.rows):
+            cell = self.table.item(index, 0)
+            if cell is None:
+                continue
+            is_checked = row['video_id'] in self.checked and not row['input_error']
+            cell.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
+            cell.setText(
+                '不可选' if row['input_error'] else ('已选择' if is_checked else '选择')
+            )
+            cell.setForeground(QColor('#0F766E' if is_checked else '#64727B'))
+            font = cell.font()
+            font.setBold(is_checked)
+            cell.setFont(font)
+        self.table.setUpdatesEnabled(True)
+        self.table.blockSignals(False)
+        self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
+        bitrate_running = self.bitrate_task and self.bitrate_task.isRunning()
+        self.bitrate_button.setEnabled(
+            not self.is_running() and not bitrate_running and bool(self.checked)
+        )
+
     def check_visible(self, enabled):
         if not enabled:
             self.checked.clear()
@@ -367,7 +391,7 @@ class MainWindow(QMainWindow):
             if not self.table.isRowHidden(i) and not row['input_error']:
                 if enabled:
                     self.checked.add(row['video_id'])
-        self.refresh_table()
+        self.sync_selection_cells()
 
     def visible_selectable_rows(self):
         return [
@@ -377,7 +401,7 @@ class MainWindow(QMainWindow):
 
     def clear_selection(self):
         self.checked.clear()
-        self.refresh_table()
+        self.sync_selection_cells()
 
     def invert_visible_selection(self):
         for index in self.visible_selectable_rows():
@@ -386,13 +410,13 @@ class MainWindow(QMainWindow):
                 self.checked.remove(video_id)
             else:
                 self.checked.add(video_id)
-        self.refresh_table()
+        self.sync_selection_cells()
 
     def _replace_visible_selection(self, selected_rows):
         visible_rows = self.visible_selectable_rows()
         self.checked.difference_update(self.rows[index]['video_id'] for index in visible_rows)
         self.checked.update(self.rows[index]['video_id'] for index in selected_rows)
-        self.refresh_table()
+        self.sync_selection_cells()
 
     def select_first_rows(self):
         visible_rows = self.visible_selectable_rows()

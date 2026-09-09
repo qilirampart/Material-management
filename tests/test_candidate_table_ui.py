@@ -238,6 +238,17 @@ class CandidateTableUiTests(unittest.TestCase):
             "7681538825608236335",
         })
 
+    def test_bulk_selection_does_not_rebuild_the_full_table(self):
+        self.window.checked.clear()
+        self.window.selection_count.setValue(1)
+
+        with patch.object(self.window, "refresh_table") as refresh:
+            self.window.select_first_rows()
+
+        refresh.assert_not_called()
+        self.assertEqual(self.window.checked, {"7681538825608236331"})
+        self.assertEqual(self.window.table.item(0, 0).checkState(), Qt.Checked)
+
     def test_remove_checked_materials_keeps_unselected_rows(self):
         second = {
             "video_id": "7681538825608236332",
