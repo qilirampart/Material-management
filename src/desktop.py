@@ -927,9 +927,8 @@ class MainWindow(QMainWindow):
         # Byte events update only the active row, not the entire candidate table.
         for index, row in enumerate(self.rows):
             if row['video_id'] == self.current_id:
-                self.table.item(index, 2).setText(brief)
-                self.table.item(index, 2).setToolTip(amount + ' · ' + speed)
-                self.table.item(index, 3).setText('等待检测' if self.mode.currentData() == 'both' else '仅下载')
+                self.table.item(index, 5).setText(brief)
+                self.table.item(index, 5).setToolTip(amount + ' · ' + speed)
         self.statusBar().showMessage(self.current_id + ' · ' + brief + ' · ' + amount + ' · ' + speed)
 
     def worker_finished(self, code, status):

@@ -65,6 +65,23 @@ class CandidateTableUiTests(unittest.TestCase):
 
         self.assertFalse(self.window.table.isRowHidden(0))
 
+    def test_download_progress_updates_status_without_overwriting_identity(self):
+        video_id = "7681538825608236331"
+        title = self.window.table.item(0, 3).text()
+
+        self.window.show_download_progress({
+            "video_id": video_id,
+            "received": 5 * 1048576,
+            "total": 10 * 1048576,
+            "percent": 50.0,
+            "speed": 1048576,
+        })
+
+        self.assertEqual(self.window.table.item(0, 2).text(), video_id)
+        self.assertEqual(self.window.table.item(0, 3).text(), title)
+        self.assertEqual(self.window.table.item(0, 5).text(), "下载 50.0%")
+        self.assertIn("1.0 MB/s", self.window.table.item(0, 5).toolTip())
+
     def test_downloaded_video_quality_is_visible_in_candidate_table(self):
         self.window.records = {
             "7681538825608236331": {
