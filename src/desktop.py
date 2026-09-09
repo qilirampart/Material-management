@@ -15,12 +15,18 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
     QStackedWidget, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QComboBox, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QSpinBox,
-    QCheckBox,
 )
 
 from src.batch import LABELS, read_input, save_json, export_report
-from src.media import describe_bitrate, describe_video, effective_video_bitrate_bps, probe
+from src.media import (
+    MINIMUM_VIDEO_BITRATE_KBPS,
+    describe_bitrate,
+    describe_video,
+    effective_video_bitrate_bps,
+    probe,
+)
 from src.paths import RESOURCE_ROOT, DATA_ROOT, prepare_environment
+from src.upload import enhance_selected_bitrates
 from src.vision import PHRASES, load_profile, fingerprint
 from src.desktop_widgets import button, title, local_open, SettingsPage, ReviewPage, PlatformPage
 
@@ -60,6 +66,7 @@ class MainWindow(QMainWindow):
         self.checked = set()
         self.io_task = None
         self.quality_task = None
+        self.bitrate_task = None
         self.folder = None
         self.input_path = None
         self.current_id = ""
@@ -191,11 +198,9 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         self.selection_label = label('已勾选 0 条')
         toolbar.addWidget(self.selection_label, 1)
-        self.bitrate_enhancement = QCheckBox('上传前码率增强至 4200 kbps')
-        self.bitrate_enhancement.setChecked(bool(self.config.get('normalize_upload_bitrate', True)))
-        self.bitrate_enhancement.setToolTip('仅生成上传副本，保留原始下载文件；源视频超过 3500 kbps 时不转码')
-        self.bitrate_enhancement.toggled.connect(self.set_upload_bitrate_normalization)
-        toolbar.addWidget(self.bitrate_enhancement)
+        self.bitrate_button = button('提升选中低码率视频', self.enhance_selected_bitrate)
+        self.bitrate_button.setToolTip('只处理当前勾选且不超过 3500 kbps 的视频；原始下载文件保持不变')
+        toolbar.addWidget(self.bitrate_button)
         self.mode = QComboBox()
         self.mode.addItem('下载并检测', 'both')
         self.mode.addItem('仅下载', 'download')
@@ -302,6 +307,7 @@ class MainWindow(QMainWindow):
         cell.setFont(font)
         self.table.blockSignals(False)
         self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
+        self.bitrate_button.setEnabled(bool(self.checked) and not self.is_running())
 
     def check_visible(self, enabled):
         if not enabled:
@@ -450,7 +456,7 @@ class MainWindow(QMainWindow):
     def set_busy(self, busy):
         for control in [
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
-            self.mode, self.bitrate_enhancement, self.link_button, self.local_button, self.select_all_button,
+            self.mode, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
         ]:
@@ -499,6 +505,15 @@ class MainWindow(QMainWindow):
             source = row.get('source', {})
             original_url = str(row.get('url') or source.get('原始链接') or '')
             is_checked = id_ in self.checked
+            quality_parts = [
+                describe_bitrate(record.get("metadata")),
+                describe_video(record.get("metadata")),
+            ]
+            enhanced_path = Path(record.get('bitrate_enhanced_path', ''))
+            if enhanced_path.is_file():
+                quality_parts.append(
+                    '达标副本 ' + describe_bitrate(record.get('bitrate_enhanced_metadata'))
+                )
             cells = [
                 '不可选' if row['input_error'] else ('已选择' if is_checked else '选择'),
                 str(index + 1),
@@ -506,10 +521,7 @@ class MainWindow(QMainWindow):
                 str(source.get("剧名") or ""),
                 original_url,
                 record.get("download", "待下载"),
-                " | ".join(filter(None, [
-                    describe_bitrate(record.get("metadata")),
-                    describe_video(record.get("metadata")),
-                ])),
+                " | ".join(filter(None, quality_parts)),
                 label,
                 hints,
                 self.notes.get(id_, {}).get("note", ""),
@@ -549,6 +561,8 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(False)
         self.table.setUpdatesEnabled(True)
         self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
+        bitrate_running = self.bitrate_task and self.bitrate_task.isRunning()
+        self.bitrate_button.setEnabled(not self.is_running() and not bitrate_running and bool(self.checked))
         self.apply_filter()
         self.table.verticalScrollBar().setValue(scroll)
 
@@ -663,13 +677,61 @@ class MainWindow(QMainWindow):
             self.refresh_table()
         self.statusBar().showMessage(f'已读取 {len(updates)} 个视频的码率信息')
 
-    def set_upload_bitrate_normalization(self, enabled):
-        self.config['normalize_upload_bitrate'] = bool(enabled)
-        if hasattr(self, 'settings'):
-            self.settings.config['normalize_upload_bitrate'] = bool(enabled)
-        save_json(self.config_path, self.config)
-        if hasattr(self, 'platform'):
-            self.platform.set_bitrate_normalization(enabled)
+    def enhance_selected_bitrate(self):
+        if self.bitrate_task and self.bitrate_task.isRunning():
+            return
+        selected = self.selected_ids()
+        low_bitrate_ids = [
+            video_id for video_id in selected
+            if 0 < effective_video_bitrate_bps(self.records.get(video_id, {}).get('metadata'))
+            <= MINIMUM_VIDEO_BITRATE_KBPS * 1000
+        ]
+        if not low_bitrate_ids:
+            self.statusBar().showMessage('当前勾选素材中没有已读取码率且不达标的视频')
+            return
+        output_folder = self.folder / 'bitrate-enhanced'
+        self.set_busy(True)
+        self.start_button.setEnabled(False)
+        self.work_status.setText('正在提升码率 · 并发上限 1')
+        self.work_detail.setText(f'准备处理 {len(low_bitrate_ids)} 个低码率视频')
+        self.download_bar.setRange(0, 0)
+        self.download_bar.setFormat('正在转码')
+        self.statusBar().showMessage(f'正在提升 {len(low_bitrate_ids)} 个视频的码率…')
+        self.bitrate_task = Background(
+            lambda: enhance_selected_bitrates(
+                self.records,
+                low_bitrate_ids,
+                output_folder,
+            ),
+            self,
+        )
+        self.bitrate_task.result.connect(self.apply_enhanced_bitrates)
+        self.bitrate_task.failed.connect(self.bitrate_enhancement_failed)
+        self.bitrate_task.finished.connect(self.bitrate_enhancement_finished)
+        self.bitrate_task.start()
+
+    def apply_enhanced_bitrates(self, updates):
+        for video_id, values in updates.items():
+            if video_id in self.records:
+                self.records[video_id].update(values)
+        if self.folder and updates:
+            state_path = self.folder / 'results.json'
+            state = read_json(state_path, {})
+            state['records'] = self.records
+            save_json(state_path, state)
+        self.refresh_table()
+        self.statusBar().showMessage(f'已完成 {len(updates)} 个低码率视频的达标副本')
+
+    def bitrate_enhancement_failed(self, message):
+        self.statusBar().showMessage(f'码率提升失败：{message}')
+
+    def bitrate_enhancement_finished(self):
+        self.work_status.setText('就绪 · 并发上限 1')
+        self.work_detail.setText('码率处理结束；达标副本将在上传时自动使用。')
+        self.download_bar.setRange(0, 1000)
+        self.download_bar.setValue(1000)
+        self.download_bar.setFormat('码率处理结束')
+        self.set_busy(False)
 
     def show_review_id(self, id_):
         row = next((r for r in self.rows if r['video_id'] == id_), None)
@@ -701,11 +763,6 @@ class MainWindow(QMainWindow):
     def save_settings(self, config):
         self.config = config
         self.platform.config = config
-        normalize_bitrate = bool(config.get('normalize_upload_bitrate', True))
-        self.bitrate_enhancement.blockSignals(True)
-        self.bitrate_enhancement.setChecked(normalize_bitrate)
-        self.bitrate_enhancement.blockSignals(False)
-        self.platform.set_bitrate_normalization(normalize_bitrate)
         self.platform.address.setText(config.get("platform_url", ""))
         save_json(self.config_path, config)
         self.refresh_fingerprint()

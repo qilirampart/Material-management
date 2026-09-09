@@ -548,10 +548,7 @@ class PlatformPage(QWidget):
         box.addWidget(self.material_list)
         box.addWidget(label('固定信息', 'section'))
         box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · 按部门可见'))
-        self.bitrate_policy = label('')
-        self.bitrate_policy.setWordWrap(True)
-        box.addWidget(self.bitrate_policy)
-        self.set_bitrate_normalization(config.get('normalize_upload_bitrate', True))
+        box.addWidget(label('码率处理：请在素材任务中勾选低码率视频并主动提升'))
         self.read_selection_button = button('读取平台已选信息', self.read_platform_selection)
         self.read_selection_button.setEnabled(False)
         box.addWidget(self.read_selection_button)
@@ -573,15 +570,6 @@ class PlatformPage(QWidget):
         box.addWidget(label('只完成文件选择与页面填写，不保存草稿，不提交审核。'))
         body.addWidget(preparation)
         layout.addLayout(body, 1)
-
-    def set_bitrate_normalization(self, enabled):
-        self.config['normalize_upload_bitrate'] = bool(enabled)
-        if hasattr(self, 'bitrate_policy'):
-            self.bitrate_policy.setText(
-                '码率增强：已开启 · ≤3500 kbps 时生成 4200 kbps 上传副本'
-                if enabled else
-                '码率增强：已关闭 · 上传时保留原视频码率'
-            )
 
     def navigate_platform(self, action):
         if self.browser:
@@ -901,10 +889,9 @@ class PlatformPage(QWidget):
         self.prepare_button.setEnabled(False)
         self.fill_button.setEnabled(False)
         self.preview.setText('正在后台生成上传暂存文件…')
-        normalize_bitrate = bool(self.config.get('normalize_upload_bitrate', True))
         self.staging_task = Background(
             lambda: [
-                stage_upload_batch(batch, staging, normalize_bitrate=normalize_bitrate)
+                stage_upload_batch(batch, staging)
                 for batch in plan
             ],
             self,
@@ -929,16 +916,14 @@ class PlatformPage(QWidget):
         self.fill_button.setEnabled(bool(self.upload_batches))
         first = self.upload_batches[0]['items'][0]['upload_name'] if self.upload_batches else ''
         normalized_count = sum(
-            bool(item.get('bitrate_normalized'))
+            bool(item.get('uses_bitrate_enhanced_copy'))
             for batch in self.upload_batches
             for item in batch.get('items', [])
         )
-        if not self.config.get('normalize_upload_bitrate', True):
-            bitrate_message = '\n码率增强已关闭，本批次保留原视频码率'
-        elif normalized_count:
-            bitrate_message = f'\n其中 {normalized_count} 个低码率视频已生成 4200 kbps 上传副本并复检通过'
+        if normalized_count:
+            bitrate_message = f'\n本批次使用 {normalized_count} 个已提升并复检达标的副本'
         else:
-            bitrate_message = '\n本批次视频码率均已达标，无需增强'
+            bitrate_message = '\n本批次未使用码率提升副本'
         self.preview.setText(
             f'已生成 {len(self.upload_batches)} 个批次{bitrate_message}\n文件名示例：{first}'
         )

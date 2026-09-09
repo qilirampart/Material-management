@@ -90,9 +90,9 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertIn("4.80 Mbps", quality)
         self.assertIn("30fps", quality)
 
-    def test_upload_bitrate_enhancement_option_is_visible(self):
-        self.assertTrue(self.window.bitrate_enhancement.isVisibleTo(self.window))
-        self.assertIn("4200 kbps", self.window.bitrate_enhancement.text())
+    def test_upload_bitrate_enhancement_action_is_visible(self):
+        self.assertTrue(self.window.bitrate_button.isVisibleTo(self.window))
+        self.assertEqual(self.window.bitrate_button.text(), "提升选中低码率视频")
 
     def test_backfilled_quality_is_displayed_and_saved_for_old_batch(self):
         with tempfile.TemporaryDirectory() as folder:

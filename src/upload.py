@@ -89,7 +89,14 @@ def build_upload_plan(
     upload_date = upload_date or date.today()
     items = []
     for sequence, material in enumerate(materials, 1):
-        original = Path(material.get("record", {}).get("video_path", ""))
+        record = material.get("record", {})
+        enhanced = Path(record.get("bitrate_enhanced_path", ""))
+        enhanced_metadata = record.get("bitrate_enhanced_metadata", {})
+        use_enhanced = (
+            enhanced.is_file()
+            and effective_video_bitrate_bps(enhanced_metadata) > MINIMUM_VIDEO_BITRATE_KBPS * 1000
+        )
+        original = enhanced if use_enhanced else Path(record.get("video_path", ""))
         suffix = original.suffix.lower() or ".mp4"
         name = f"{UPLOAD_NAME_PREFIX}-{drama_name}-{uploader_initials}-{upload_date:%y%m%d}-{sequence:02d}{suffix}"
         items.append({
@@ -99,7 +106,8 @@ def build_upload_plan(
             "drama_name": drama_name,
             "drama_platform_id": drama_platform_id,
             "director": director,
-            "metadata": material.get("record", {}).get("metadata", {}),
+            "metadata": enhanced_metadata if use_enhanced else record.get("metadata", {}),
+            "uses_bitrate_enhanced_copy": use_enhanced,
         })
 
     return [
@@ -108,7 +116,7 @@ def build_upload_plan(
     ]
 
 
-def stage_upload_batch(batch, staging_root, *, normalize_bitrate=True):
+def stage_upload_batch(batch, staging_root, *, normalize_bitrate=False):
     target_folder = Path(staging_root) / f"batch-{int(batch['index']):02d}"
     target_folder.mkdir(parents=True, exist_ok=True)
     staged_items = []
@@ -158,6 +166,40 @@ def stage_upload_batch(batch, staging_root, *, normalize_bitrate=True):
             "upload_metadata": upload_metadata,
         })
     return {**batch, "items": staged_items, "folder": str(target_folder)}
+
+
+def enhance_selected_bitrates(records, video_ids, output_folder):
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    enhanced = {}
+    for video_id in video_ids:
+        record = records.get(video_id, {})
+        existing = Path(record.get("bitrate_enhanced_path", ""))
+        existing_metadata = record.get("bitrate_enhanced_metadata", {})
+        if (
+            existing.is_file()
+            and effective_video_bitrate_bps(existing_metadata) > MINIMUM_VIDEO_BITRATE_KBPS * 1000
+        ):
+            enhanced[video_id] = {
+                "bitrate_enhanced_path": str(existing.resolve()),
+                "bitrate_enhanced_metadata": existing_metadata,
+            }
+            continue
+        source = Path(record.get("video_path", ""))
+        source_bitrate = effective_video_bitrate_bps(record.get("metadata"))
+        if (
+            not source.is_file()
+            or source_bitrate <= 0
+            or source_bitrate > MINIMUM_VIDEO_BITRATE_KBPS * 1000
+        ):
+            continue
+        target = output_folder / f"{safe_filename_part(video_id)}.mp4"
+        metadata = transcode_for_upload_bitrate(source, target)
+        enhanced[video_id] = {
+            "bitrate_enhanced_path": str(target.resolve()),
+            "bitrate_enhanced_metadata": metadata,
+        }
+    return enhanced
 
 
 def load_upload_preferences(path):

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from src.upload import (
     build_upload_plan,
     eligible_materials,
+    enhance_selected_bitrates,
     forget_upload_preference,
     load_upload_preferences,
     remember_upload_preferences,
@@ -78,6 +79,36 @@ class UploadPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "建议短剧"):
             build_upload_plan([], drama_name="", drama_platform_id="", director="", uploader_initials="")
 
+    def test_plan_prefers_explicitly_enhanced_video_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            enhanced = root / "enhanced.mp4"
+            source.write_bytes(b"source")
+            enhanced.write_bytes(b"enhanced")
+            enhanced_metadata = {"video_bitrate_bps": 4_200_000}
+
+            batches = build_upload_plan(
+                [{
+                    "video_id": "123",
+                    "record": {
+                        "video_path": str(source),
+                        "metadata": {"video_bitrate_bps": 1_200_000},
+                        "bitrate_enhanced_path": str(enhanced),
+                        "bitrate_enhanced_metadata": enhanced_metadata,
+                    },
+                }],
+                drama_name="测试短剧",
+                drama_platform_id="456",
+                director="测试编导",
+                uploader_initials="ZYY",
+            )
+
+            item = batches[0]["items"][0]
+            self.assertEqual(item["original_path"], str(enhanced))
+            self.assertEqual(item["metadata"], enhanced_metadata)
+            self.assertTrue(item["uses_bitrate_enhanced_copy"])
+
     def test_staging_keeps_source_and_creates_named_upload_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -123,7 +154,11 @@ class UploadPreparationTests(unittest.TestCase):
 
             transcode.side_effect = create_upload_copy
 
-            staged = stage_upload_batch(batch, root / "upload-staging")
+            staged = stage_upload_batch(
+                batch,
+                root / "upload-staging",
+                normalize_bitrate=True,
+            )
 
             staged_item = staged["items"][0]
             self.assertEqual(source.read_bytes(), b"original-video")
@@ -131,6 +166,32 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertTrue(staged_item["bitrate_normalized"])
             self.assertEqual(staged_item["upload_metadata"], converted_metadata)
             transcode.assert_called_once()
+
+    @patch("src.upload.transcode_for_upload_bitrate")
+    def test_explicit_enhancement_creates_reusable_upload_copy(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"original-video")
+            metadata = {"video_bitrate_bps": 4_200_000}
+
+            def create_copy(_source, output):
+                Path(output).write_bytes(b"enhanced-video")
+                return metadata
+
+            transcode.side_effect = create_copy
+            records = {
+                "123": {
+                    "video_path": str(source),
+                    "metadata": {"video_bitrate_bps": 1_200_000},
+                },
+            }
+
+            updates = enhance_selected_bitrates(records, ["123"], root / "enhanced")
+
+            self.assertEqual(source.read_bytes(), b"original-video")
+            self.assertEqual(Path(updates["123"]["bitrate_enhanced_path"]).read_bytes(), b"enhanced-video")
+            self.assertEqual(updates["123"]["bitrate_enhanced_metadata"], metadata)
 
     @patch("src.upload.transcode_for_upload_bitrate")
     def test_staging_can_leave_low_bitrate_source_unchanged(self, transcode):
