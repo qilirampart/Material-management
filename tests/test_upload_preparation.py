@@ -229,6 +229,40 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(failed, [("2", "RuntimeError")])
 
     @patch("src.upload.transcode_for_upload_bitrate")
+    def test_explicit_enhancement_stops_before_starting_next_item(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            records = {}
+            for video_id in ("1", "2"):
+                source = root / f"{video_id}.mp4"
+                source.write_bytes(b"original-video")
+                records[video_id] = {
+                    "video_path": str(source),
+                    "metadata": {"video_bitrate_bps": 1_200_000},
+                }
+            stop = {"requested": False}
+
+            def convert(_source, output):
+                Path(output).write_bytes(b"enhanced-video")
+                stop["requested"] = True
+                return {"video_bitrate_bps": 4_200_000}
+
+            transcode.side_effect = convert
+            started = []
+
+            updates = enhance_selected_bitrates(
+                records,
+                ["1", "2"],
+                root / "enhanced",
+                item_started=lambda video_id, index, total: started.append((video_id, index, total)),
+                should_stop=lambda: stop["requested"],
+            )
+
+            self.assertEqual(set(updates), {"1"})
+            self.assertEqual(started, [("1", 1, 2)])
+            self.assertEqual(transcode.call_count, 1)
+
+    @patch("src.upload.transcode_for_upload_bitrate")
     def test_staging_can_leave_low_bitrate_source_unchanged(self, transcode):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

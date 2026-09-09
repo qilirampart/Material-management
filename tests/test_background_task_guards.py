@@ -84,6 +84,15 @@ class BackgroundTaskGuardTests(unittest.TestCase):
         self.assertFalse(event.isAccepted())
         self.assertIn("后台", self.window.statusBar().currentMessage())
 
+    def test_pause_button_requests_bitrate_stop_after_current_item(self):
+        self.window.bitrate_task = RunningTask()
+        self.window.bitrate_stop_event.clear()
+
+        self.window.pause_active_task()
+
+        self.assertTrue(self.window.bitrate_stop_event.is_set())
+        self.assertIn("当前视频完成后暂停", self.window.statusBar().currentMessage())
+
 
 if __name__ == "__main__":
     unittest.main()

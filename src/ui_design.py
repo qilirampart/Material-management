@@ -72,6 +72,7 @@ def card(heading=''):
 class Background(QThread):
     result = Signal(object)
     failed = Signal(str)
+    progress = Signal(object)
 
     def __init__(self, function, parent=None):
         super().__init__(parent)

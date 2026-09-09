@@ -4,6 +4,7 @@ import copy
 import json
 import shutil
 import sys
+import threading
 import uuid
 from collections import Counter
 from datetime import datetime
@@ -52,7 +53,7 @@ def probe_missing_quality(items):
     return metadata
 
 
-def enhance_batch_bitrates(batch_folder, records, video_ids):
+def enhance_batch_bitrates(batch_folder, records, video_ids, progress=None, should_stop=None):
     batch_folder = Path(batch_folder).resolve()
     durable_records = copy.deepcopy(records)
     state_path = batch_folder / 'results.json'
@@ -65,9 +66,22 @@ def enhance_batch_bitrates(batch_folder, records, video_ids):
         state = read_json(state_path, {})
         state['records'] = durable_records
         save_json(state_path, state)
+        if progress:
+            progress({'phase': 'completed', 'video_id': video_id})
 
     def record_failure(video_id, error):
         failed[video_id] = type(error).__name__
+        if progress:
+            progress({'phase': 'failed', 'video_id': video_id})
+
+    def item_started(video_id, index, total):
+        if progress:
+            progress({
+                'phase': 'started',
+                'video_id': video_id,
+                'index': index,
+                'total': total,
+            })
 
     updates = enhance_selected_bitrates(
         durable_records,
@@ -75,11 +89,14 @@ def enhance_batch_bitrates(batch_folder, records, video_ids):
         batch_folder / 'bitrate-enhanced',
         item_completed=persist_item,
         item_failed=record_failure,
+        item_started=item_started,
+        should_stop=should_stop,
     )
     return {
         'folder': str(batch_folder),
         'updates': updates,
         'failed': failed,
+        'stopped': bool(should_stop and should_stop()),
     }
 
 
@@ -98,6 +115,7 @@ class MainWindow(QMainWindow):
         self.io_task = None
         self.quality_task = None
         self.bitrate_task = None
+        self.bitrate_stop_event = threading.Event()
         self.folder = None
         self.input_path = None
         self.current_id = ""
@@ -293,7 +311,8 @@ class MainWindow(QMainWindow):
         box.addWidget(self.download_bar)
         self.transfer_detail = label('下载时显示实际字节进度')
         box.addWidget(self.transfer_detail)
-        box.addWidget(button('暂停队列', lambda: self.pause() if self.is_running() else None))
+        self.pause_button = button('暂停队列', self.pause_active_task)
+        box.addWidget(self.pause_button)
         box.addWidget(label('暂停后等待当前任务结束'))
         side.addWidget(work)
         proof, box = card('片头证据')
@@ -737,6 +756,7 @@ class MainWindow(QMainWindow):
             return
         batch_folder = self.folder.resolve()
         records = copy.deepcopy(self.records)
+        self.bitrate_stop_event.clear()
         self.set_busy(True)
         self.start_button.setEnabled(False)
         self.work_status.setText('正在提升码率 · 并发上限 1')
@@ -744,14 +764,36 @@ class MainWindow(QMainWindow):
         self.download_bar.setRange(0, 0)
         self.download_bar.setFormat('正在转码')
         self.statusBar().showMessage(f'正在提升 {len(low_bitrate_ids)} 个视频的码率…')
-        self.bitrate_task = Background(
-            lambda: enhance_batch_bitrates(batch_folder, records, low_bitrate_ids),
-            self,
-        )
+        task = None
+
+        def enhance():
+            return enhance_batch_bitrates(
+                batch_folder,
+                records,
+                low_bitrate_ids,
+                progress=task.progress.emit,
+                should_stop=self.bitrate_stop_event.is_set,
+            )
+
+        task = Background(enhance, self)
+        self.bitrate_task = task
+        self.bitrate_task.progress.connect(self.show_bitrate_progress)
         self.bitrate_task.result.connect(self.apply_enhanced_bitrates)
         self.bitrate_task.failed.connect(self.bitrate_enhancement_failed)
         self.bitrate_task.finished.connect(self.bitrate_enhancement_finished)
         self.bitrate_task.start()
+
+    def show_bitrate_progress(self, event):
+        if event.get('phase') != 'started':
+            return
+        index = int(event.get('index', 0))
+        total = max(1, int(event.get('total', 1)))
+        self.download_bar.setRange(0, total)
+        self.download_bar.setValue(max(0, index - 1))
+        self.download_bar.setFormat(f'第 {index} / {total} 个')
+        self.work_detail.setText(
+            f"正在处理 {event.get('video_id', '')}\n当前文件完成后可暂停"
+        )
 
     def apply_enhanced_bitrates(self, result):
         if not self.folder or result.get('folder') != str(self.folder.resolve()):
@@ -765,12 +807,15 @@ class MainWindow(QMainWindow):
         message = f'已完成 {len(updates)} 个低码率视频的达标副本'
         if failed:
             message += f'，{len(failed)} 个失败，可重新勾选重试'
+        if result.get('stopped'):
+            message += '，队列已暂停'
         self.statusBar().showMessage(message)
 
     def bitrate_enhancement_failed(self, message):
         self.statusBar().showMessage(f'码率提升失败：{message}')
 
     def bitrate_enhancement_finished(self):
+        self.pause_button.setEnabled(True)
         self.work_status.setText('就绪 · 并发上限 1')
         self.work_detail.setText('码率处理结束；达标副本将在上传时自动使用。')
         self.download_bar.setRange(0, 1000)
@@ -906,6 +951,15 @@ class MainWindow(QMainWindow):
         self.start_button.setText("正在暂停…")
         self.start_button.setEnabled(False)
         self.statusBar().showMessage("当前素材处理完成后暂停；已完成结果将保留")
+
+    def pause_active_task(self):
+        if self.bitrate_task and self.bitrate_task.isRunning():
+            self.bitrate_stop_event.set()
+            self.pause_button.setEnabled(False)
+            self.statusBar().showMessage('已请求暂停，当前视频完成后暂停')
+            return
+        if self.is_running():
+            self.pause()
 
     def poll_events(self):
         if not self.event_path.exists():

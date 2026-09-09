@@ -130,6 +130,19 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertTrue(self.window.bitrate_button.isVisibleTo(self.window))
         self.assertEqual(self.window.bitrate_button.text(), "提升选中低码率视频")
 
+    def test_bitrate_progress_shows_current_item_and_queue_position(self):
+        self.window.show_bitrate_progress({
+            "phase": "started",
+            "video_id": "7681538825608236331",
+            "index": 2,
+            "total": 5,
+        })
+
+        self.assertEqual(self.window.download_bar.maximum(), 5)
+        self.assertEqual(self.window.download_bar.value(), 1)
+        self.assertEqual(self.window.download_bar.format(), "第 2 / 5 个")
+        self.assertIn("7681538825608236331", self.window.work_detail.text())
+
     def test_backfilled_quality_is_displayed_and_saved_for_old_batch(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

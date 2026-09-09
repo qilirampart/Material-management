@@ -174,11 +174,18 @@ def enhance_selected_bitrates(
     output_folder,
     item_completed=None,
     item_failed=None,
+    item_started=None,
+    should_stop=None,
 ):
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
     enhanced = {}
-    for video_id in video_ids:
+    total = len(video_ids)
+    for index, video_id in enumerate(video_ids, 1):
+        if should_stop and should_stop():
+            break
+        if item_started:
+            item_started(video_id, index, total)
         record = records.get(video_id, {})
         existing = Path(record.get("bitrate_enhanced_path", ""))
         existing_metadata = record.get("bitrate_enhanced_metadata", {})
