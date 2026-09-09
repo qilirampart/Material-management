@@ -93,6 +93,9 @@ class EdgeCdpTests(unittest.TestCase):
         result = evaluate_edge_page("ws://page", "({ok:true})")
 
         self.assertEqual(result, {"ok": True})
+        connect.assert_called_once_with(
+            "ws://page", timeout=10, suppress_origin=True
+        )
         payload = json.loads(socket.send.call_args.args[0])
         self.assertTrue(payload["params"]["returnByValue"])
         socket.close.assert_called_once()
@@ -122,6 +125,10 @@ class EdgeCdpTests(unittest.TestCase):
         self.assertEqual(result["names"], ["a.mp4", "b.mp4"])
         payloads = [json.loads(call.args[0]) for call in socket.send.call_args_list]
         self.assertEqual(payloads[1]["method"], "DOM.setFileInputFiles")
+        self.assertNotIn(
+            "dispatchEvent",
+            payloads[2]["params"]["functionDeclaration"],
+        )
         self.assertEqual(payloads[1]["params"]["files"], ["a.mp4", "b.mp4"])
 
     @patch("src.edge_cdp.FILE_PREVIEW_WAIT_ATTEMPTS", 1)

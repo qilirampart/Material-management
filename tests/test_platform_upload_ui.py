@@ -75,7 +75,11 @@ class PlatformUploadUiTests(unittest.TestCase):
 
         QTest.mouseClick(page.reload_button, Qt.LeftButton)
         for _ in range(100):
-            if navigate.called and "\u5df2\u5237\u65b0" in page.status.text():
+            if (
+                navigate.called
+                and "\u5df2\u5237\u65b0" in page.status.text()
+                and page.reload_button.isEnabled()
+            ):
                 break
             QTest.qWait(10)
 

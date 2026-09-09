@@ -30,6 +30,8 @@ class PlatformBridgeTests(unittest.TestCase):
         script = build_upload_file_input_script()
 
         self.assertIn("uploadVideoFile", script)
+        self.assertIn("uploadVideoFileOss", script)
+        self.assertIn("isShowOssUpload", script)
         self.assertIn("material_add", script)
         self.assertNotIn("click()", script)
 
@@ -47,6 +49,7 @@ class PlatformBridgeTests(unittest.TestCase):
         self.assertIn("bookIdSelect", script)
         self.assertIn("BOOK_SEARCH_STARTED", script)
         self.assertIn("SOURCE_TYPE_CHANGING", script)
+        self.assertIn("onChangeSourceType", script)
         self.assertIn("xm-select-input", script)
         self.assertIn("onChangeAdTargetType", script)
         self.assertNotIn("#ensure", script)

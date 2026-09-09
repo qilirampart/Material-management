@@ -72,7 +72,14 @@ def build_upload_file_input_script():
   const main = mainFrame?.contentDocument;
   const uploadFrame = main ? [...main.querySelectorAll('iframe')]
     .filter(frame => frame.src.includes('material_add')).at(-1) : null;
-  return uploadFrame?.contentDocument?.querySelector('#uploadVideoFile') || null;
+  const doc = uploadFrame?.contentDocument;
+  const useOss = doc?.querySelector('#isShowOssUpload')?.value === '1';
+  const container = doc?.querySelector(
+    useOss ? '#uploadVideoFileOssDiv' : '#uploadVideoFileDiv'
+  );
+  if (!doc || !container || uploadFrame.contentWindow.getComputedStyle(container).display === 'none')
+    return null;
+  return doc.querySelector(useOss ? '#uploadVideoFileOss' : '#uploadVideoFile') || null;
 })()"""
 
 
@@ -142,10 +149,17 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
   }};
   try {{
     const sourceType = doc.querySelector('#sourceType');
-    if (sourceType.value !== 'video') {{
+    const useOss = doc.querySelector('#isShowOssUpload')?.value === '1';
+    const videoContainer = doc.querySelector(
+      useOss ? '#uploadVideoFileOssDiv' : '#uploadVideoFileDiv'
+    );
+    const videoContainerHidden = !videoContainer
+      || win.getComputedStyle(videoContainer).display === 'none';
+    if (sourceType.value !== 'video' || videoContainerHidden) {{
       win.setTimeout(() => {{
         sourceType.value = 'video';
         dispatch(sourceType);
+        win.MaterialInfoDlg?.onChangeSourceType?.(false);
       }}, 0);
       return {{ok:false, code:'SOURCE_TYPE_CHANGING', message:'正在切换为视频素材'}};
     }}

@@ -8,6 +8,7 @@ import websocket
 
 FILE_PREVIEW_WAIT_ATTEMPTS = 30
 FILE_PREVIEW_WAIT_INTERVAL = 0.1
+PAGE_EVALUATION_TIMEOUT = 10
 
 
 class EdgeFileSelectionError(RuntimeError):
@@ -26,7 +27,11 @@ def _receive_response(socket, request_id: int):
 
 
 def evaluate_edge_page(ws_url: str, expression: str):
-    socket = websocket.create_connection(ws_url, timeout=3, suppress_origin=True)
+    socket = websocket.create_connection(
+        ws_url,
+        timeout=PAGE_EVALUATION_TIMEOUT,
+        suppress_origin=True,
+    )
     try:
         socket.send(json.dumps({
             "id": 1,
@@ -123,10 +128,9 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
                 "objectId": object_id,
                 "functionDeclaration": (
                     "function(){"
-                    "this.dispatchEvent(new Event('change',{bubbles:true}));"
                     "const win=this.ownerDocument.defaultView;"
                     "const plugin=win.jQuery?.(this).data?.('fileinput');"
-                    "const previews=[...this.ownerDocument.querySelectorAll('.file-preview-frame')];"
+                    "const previews=[...(this.closest('.file-input')?.querySelectorAll('.file-preview-frame')||[])];"
                     "previews.at(-1)?.scrollIntoView?.({block:'center',inline:'nearest'});"
                     "return {inputCount:this.files.length,"
                     "pluginCount:plugin?.getFilesCount?.()??null,"
@@ -167,7 +171,7 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
                         "function(){"
                         "const win=this.ownerDocument.defaultView;"
                         "const plugin=win.jQuery?.(this).data?.('fileinput');"
-                        "const previews=[...this.ownerDocument.querySelectorAll('.file-preview-frame')];"
+                        "const previews=[...(this.closest('.file-input')?.querySelectorAll('.file-preview-frame')||[])];"
                         "previews.at(-1)?.scrollIntoView?.({block:'center',inline:'nearest'});"
                         "return {inputCount:this.files.length,"
                         "pluginCount:plugin?.getFilesCount?.()??null,"
