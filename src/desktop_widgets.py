@@ -908,7 +908,18 @@ class PlatformPage(QWidget):
         self.batch_selector.setVisible(bool(self.upload_batches))
         self.fill_button.setEnabled(bool(self.upload_batches))
         first = self.upload_batches[0]['items'][0]['upload_name'] if self.upload_batches else ''
-        self.preview.setText(f'已生成 {len(self.upload_batches)} 个批次\n文件名示例：{first}')
+        normalized_count = sum(
+            bool(item.get('bitrate_normalized'))
+            for batch in self.upload_batches
+            for item in batch.get('items', [])
+        )
+        bitrate_message = (
+            f'\n其中 {normalized_count} 个低码率视频已生成 4200 kbps 上传副本并复检通过'
+            if normalized_count else ''
+        )
+        self.preview.setText(
+            f'已生成 {len(self.upload_batches)} 个批次{bitrate_message}\n文件名示例：{first}'
+        )
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
 
     def staging_failed(self, message):

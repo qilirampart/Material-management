@@ -9,6 +9,12 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+from src.media import (
+    MINIMUM_VIDEO_BITRATE_KBPS,
+    effective_video_bitrate_bps,
+    transcode_for_upload_bitrate,
+)
+
 
 UPLOAD_BATCH_LIMIT = 50
 UPLOAD_NAME_PREFIX = "APP-繁花-王俨-改md5-情报台"
@@ -93,6 +99,7 @@ def build_upload_plan(
             "drama_name": drama_name,
             "drama_platform_id": drama_platform_id,
             "director": director,
+            "metadata": material.get("record", {}).get("metadata", {}),
         })
 
     return [
@@ -110,23 +117,45 @@ def stage_upload_batch(batch, staging_root):
         if not source.is_file():
             raise FileNotFoundError(f"待上传视频不存在：{source}")
         target = target_folder / item["upload_name"]
+        source_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source_bitrate = effective_video_bitrate_bps(source_metadata)
+        needs_bitrate_normalization = (
+            source_bitrate > 0
+            and source_bitrate <= MINIMUM_VIDEO_BITRATE_KBPS * 1000
+        )
         if target.exists():
             if not target.is_file():
                 raise FileExistsError(f"上传暂存位置被目录占用：{target}")
-            if filecmp.cmp(source, target, shallow=False):
-                staged_items.append({**item, "upload_path": str(target)})
+            if not needs_bitrate_normalization and filecmp.cmp(source, target, shallow=False):
+                staged_items.append({
+                    **item,
+                    "upload_path": str(target),
+                    "bitrate_normalized": False,
+                    "upload_metadata": source_metadata,
+                })
                 continue
 
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary = target.with_name(
+            f".{target.stem}.{uuid.uuid4().hex}.tmp{target.suffix or '.mp4'}"
+        )
         try:
-            try:
-                os.link(source, temporary)
-            except OSError:
-                shutil.copy2(source, temporary)
+            if needs_bitrate_normalization:
+                upload_metadata = transcode_for_upload_bitrate(source, temporary)
+            else:
+                try:
+                    os.link(source, temporary)
+                except OSError:
+                    shutil.copy2(source, temporary)
+                upload_metadata = source_metadata
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
-        staged_items.append({**item, "upload_path": str(target)})
+        staged_items.append({
+            **item,
+            "upload_path": str(target),
+            "bitrate_normalized": needs_bitrate_normalization,
+            "upload_metadata": upload_metadata,
+        })
     return {**batch, "items": staged_items, "folder": str(target_folder)}
 
 

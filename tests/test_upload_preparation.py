@@ -3,6 +3,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from src.upload import (
     build_upload_plan,
@@ -98,6 +99,38 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertTrue(staged_path.is_file())
             self.assertEqual(staged_path.read_bytes(), b"video-content")
             self.assertEqual(staged_path.name, batch["items"][0]["upload_name"])
+
+    @patch("src.upload.transcode_for_upload_bitrate")
+    def test_staging_transcodes_low_bitrate_copy_and_keeps_source(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"original-video")
+            batch = {
+                "index": 1,
+                "items": [{
+                    "video_id": "123",
+                    "original_path": str(source),
+                    "upload_name": "upload.mp4",
+                    "metadata": {"video_bitrate_bps": 1_200_000},
+                }],
+            }
+            converted_metadata = {"video_bitrate_bps": 4_200_000}
+
+            def create_upload_copy(source_path, output_path):
+                Path(output_path).write_bytes(b"normalized-video")
+                return converted_metadata
+
+            transcode.side_effect = create_upload_copy
+
+            staged = stage_upload_batch(batch, root / "upload-staging")
+
+            staged_item = staged["items"][0]
+            self.assertEqual(source.read_bytes(), b"original-video")
+            self.assertEqual(Path(staged_item["upload_path"]).read_bytes(), b"normalized-video")
+            self.assertTrue(staged_item["bitrate_normalized"])
+            self.assertEqual(staged_item["upload_metadata"], converted_metadata)
+            transcode.assert_called_once()
 
     def test_staging_replaces_same_size_stale_file(self):
         with tempfile.TemporaryDirectory() as folder:

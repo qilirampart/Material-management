@@ -11,6 +11,7 @@ class FFmpegError(RuntimeError):
 
 
 MINIMUM_VIDEO_BITRATE_KBPS = 3500
+TARGET_UPLOAD_BITRATE_KBPS = 4200
 
 
 def _number(value, default=0.0):
@@ -66,6 +67,12 @@ def describe_bitrate(metadata, minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS):
     return f"{source} {kbps:,.0f} kbps · {result}"
 
 
+def effective_video_bitrate_bps(metadata):
+    if not isinstance(metadata, dict):
+        return 0
+    return int(_number(metadata.get("video_bitrate_bps")) or _number(metadata.get("total_bitrate_bps")))
+
+
 def run(command, timeout=180):
     result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
                             timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -112,6 +119,43 @@ def validate_video(path):
     # Decode all streams once before treating a completed download as reusable.
     run(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"], timeout=600)
     return metadata
+
+
+def transcode_for_upload_bitrate(
+    source_path,
+    output_path,
+    *,
+    target_kbps=TARGET_UPLOAD_BITRATE_KBPS,
+    minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS,
+):
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    source_metadata = probe(source_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.unlink(missing_ok=True)
+    timeout = max(600, round(source_metadata["duration"] * 6))
+    try:
+        run([
+            "ffmpeg", "-y", "-v", "error", "-i", str(source_path),
+            "-map", "0:v:0", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-b:v", f"{target_kbps}k",
+            "-minrate", f"{target_kbps}k",
+            "-maxrate", f"{target_kbps}k",
+            "-bufsize", f"{target_kbps * 2}k",
+            "-x264-params", "nal-hrd=cbr:filler=1",
+            "-c:a", "copy", "-movflags", "+faststart", str(output_path),
+        ], timeout=timeout)
+        metadata = validate_video(output_path)
+        if effective_video_bitrate_bps(metadata) <= minimum_kbps * 1000:
+            raise FFmpegError(
+                f"转码后视频码率仍未超过 {minimum_kbps} kbps："
+                f"{effective_video_bitrate_bps(metadata) / 1000:.0f} kbps"
+            )
+        return metadata
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
 
 def merge_av_streams(video_path, audio_path, output_path):

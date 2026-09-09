@@ -2,7 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.media import describe_bitrate, describe_video, extract_frames, run, validate_video
+from src.media import (
+    describe_bitrate,
+    describe_video,
+    effective_video_bitrate_bps,
+    extract_frames,
+    run,
+    transcode_for_upload_bitrate,
+    validate_video,
+)
 
 
 class MediaTests(unittest.TestCase):
@@ -35,6 +43,26 @@ class MediaTests(unittest.TestCase):
             describe_bitrate({"video_bitrate_bps": 3_500_000, "total_bitrate_bps": 3_700_000}),
             "视频 3,500 kbps · 不足 3500",
         )
+
+    def test_upload_transcode_exceeds_threshold_and_preserves_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            output = root / "upload.mp4"
+            run([
+                "ffmpeg", "-y", "-v", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=160x240:rate=15:duration=2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                "-c:v", "libx264", "-b:v", "300k", "-c:a", "aac", "-shortest", str(source),
+            ])
+            original = source.read_bytes()
+
+            metadata = transcode_for_upload_bitrate(source, output)
+
+            self.assertEqual(source.read_bytes(), original)
+            self.assertTrue(metadata["audio"])
+            self.assertEqual(metadata["video_codec"], "h264")
+            self.assertGreater(effective_video_bitrate_bps(metadata), 3_500_000)
 
     def test_first_frame_and_one_second_intervals(self):
         with tempfile.TemporaryDirectory() as folder:
