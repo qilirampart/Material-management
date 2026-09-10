@@ -24,6 +24,14 @@ except ImportError:
     QT_WEBENGINE_AVAILABLE = False
 
 
+if QT_WEBENGINE_AVAILABLE:
+    class _QuietWebEnginePage(QWebEnginePage):
+        def javaScriptConsoleMessage(self, level, message, line_number, source_id):  # noqa: N802
+            del level, message, line_number, source_id
+else:
+    _QuietWebEnginePage = None
+
+
 @dataclass
 class DouyinBrowserProbeResult:
     page_url: str
@@ -107,7 +115,7 @@ class _DouyinBrowserProbe(QObject):
         except Exception:
             pass
 
-        self._page = QWebEnginePage(self._profile, self)
+        self._page = _QuietWebEnginePage(self._profile, self)
         self._interceptor = _DouyinMediaRequestInterceptor(self)
         self._interceptor.media_requested.connect(self._handle_media_url)
         try:

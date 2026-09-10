@@ -3,9 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +27,7 @@ _DEFAULT_CONFIG = {
     "enabled": True,
     "timeout_seconds": 45,
     "parser_connect_timeout_seconds": 5,
+    "browser_probe_timeout_seconds": 60,
     "stream_read_timeout_seconds": 20,
     "slow_retry_enabled": True,
     "slow_retry_probe_seconds": 12,
@@ -222,77 +220,36 @@ class DouyinDownloadService:
         should_cancel: CancelCallback | None = None,
     ) -> tuple[dict[str, Any], str]:
         self._check_cancelled(should_cancel)
-        fd, output_path_text = tempfile.mkstemp(prefix="douyin_browser_probe_", suffix=".json")
-        os.close(fd)
-        output_path = Path(output_path_text)
-        # Douyin may spend several seconds running its anti-bot bootstrap before
-        # the player emits the signed media request. Keep the parent process
-        # alive longer than the probe itself so a valid result is not discarded.
-        timeout = max(75.0, float(self.load_config().get("timeout_seconds", 45)) + 30.0)
-        command = self._browser_probe_command(share_url, output_path)
-
-        self._logger.info(
-            "Starting Douyin browser fallback. share_url=%s runtime=%s timeout=%.0fs",
-            share_url,
-            command[0],
-            timeout,
+        timeout_seconds = max(
+            10.0,
+            float(self.load_config().get("browser_probe_timeout_seconds", 60) or 60),
         )
+        self._logger.info("Starting reusable Douyin browser fallback. share_url=%s", share_url)
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self._project_root()),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                check=False,
-                **self._hidden_process_kwargs(),
+            # The batch worker is already isolated from the desktop process. Running
+            # the probe here keeps one QApplication/Chromium process alive across
+            # the batch while each probe still uses a fresh off-the-record profile.
+            from src.vendor.browser_probe import probe_douyin_video_url
+
+            result = probe_douyin_video_url(
+                share_url,
+                timeout_ms=round(timeout_seconds * 1000),
             )
-        except subprocess.TimeoutExpired as exc:
-            output_path.unlink(missing_ok=True)
+            payload = {
+                "ok": True,
+                "page_url": result.page_url,
+                "media_url": result.media_url,
+                "audio_url": result.audio_url,
+                "title": result.title,
+                "source": result.source,
+            }
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc).strip() or type(exc).__name__
             raise DouyinDownloadError(
-                self._friendly_browser_fallback_error(
-                    "Timed out while waiting for the browser to expose a Douyin media URL.",
-                    share_url=share_url,
-                )
-            ) from exc
-        except OSError as exc:
-            output_path.unlink(missing_ok=True)
-            raise DouyinDownloadError(
-                f"浏览器兜底进程启动失败: {exc}\n\n"
-                "请先确认当前设备的系统浏览器能正常访问抖音链接。"
+                self._friendly_browser_fallback_error(detail[:500], share_url=share_url)
             ) from exc
         finally:
             self._check_cancelled(should_cancel)
-
-        payload: dict[str, Any] | None = None
-        try:
-            if output_path.exists() and output_path.stat().st_size > 0:
-                loaded = json.loads(output_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    payload = loaded
-        except Exception as exc:  # noqa: BLE001
-            self._logger.warning("Failed to read Douyin browser probe output. path=%s error=%s", output_path, exc)
-        finally:
-            output_path.unlink(missing_ok=True)
-
-        if not payload:
-            stdout = (completed.stdout or "").strip()
-            stderr = (completed.stderr or "").strip()
-            detail = stderr or stdout or f"exit_code={completed.returncode}"
-            raise DouyinDownloadError(
-                self._friendly_browser_fallback_error(
-                    f"浏览器解析没有返回结果: {detail[:500]}",
-                    share_url=share_url,
-                )
-            )
-
-        if completed.returncode != 0 or not payload.get("ok", False):
-            detail = str(payload.get("error") or completed.stderr or completed.stdout or "unknown error").strip()
-            raise DouyinDownloadError(
-                self._friendly_browser_fallback_error(detail[:500] or "浏览器解析失败", share_url=share_url)
-            )
 
         media_url = str(payload.get("media_url") or "").strip()
         if not media_url:
@@ -338,87 +295,6 @@ class DouyinDownloadService:
             raise DouyinDownloadError(f"浏览器已获取音频流，但合并音视频失败: {exc}") from exc
         finally:
             audio_path.unlink(missing_ok=True)
-
-    @classmethod
-    def _browser_probe_command(cls, share_url: str, output_path: Path) -> list[str]:
-        if getattr(sys, "frozen", False):
-            return [sys.executable, "--probe-douyin-video-url", share_url, str(output_path)]
-
-        project_root = cls._project_root()
-        python_executable = cls._python_executable()
-        return [
-            python_executable,
-            "-m",
-            "src.vendor.browser_probe",
-            share_url,
-            str(output_path),
-        ]
-
-    @staticmethod
-    def _project_root() -> Path:
-        return Path(__file__).resolve().parents[2]
-
-    @classmethod
-    def _python_executable(cls) -> str:
-        project_root = cls._project_root()
-        executable_name = "python.exe" if os.name == "nt" else "python"
-        candidates = [
-            Path(sys.executable),
-            project_root / ".venv" / "Scripts" / executable_name,
-            project_root.parent / ".venv" / "Scripts" / executable_name,
-            project_root.parent.parent / ".venv" / "Scripts" / executable_name,
-        ]
-        path_python = shutil.which("python")
-        if path_python:
-            candidates.append(Path(path_python))
-
-        seen: set[str] = set()
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-            except OSError:
-                continue
-            key = str(resolved).lower()
-            if key in seen or not resolved.exists():
-                continue
-            seen.add(key)
-            if cls._has_probe_runtime_dependencies(resolved):
-                return str(resolved)
-        return sys.executable
-
-    @classmethod
-    def _has_probe_runtime_dependencies(cls, executable: Path) -> bool:
-        """Avoid a partial venv that re-launches main.py and exits too early."""
-        try:
-            completed = subprocess.run(
-                [str(executable), "-c", "import PySide6, requests, openpyxl"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-                **cls._hidden_process_kwargs(),
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return completed.returncode == 0
-
-    @staticmethod
-    def _hidden_process_kwargs() -> dict[str, object]:
-        kwargs: dict[str, object] = {}
-        if os.name != "nt":
-            return kwargs
-
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        if creationflags:
-            kwargs["creationflags"] = creationflags
-
-        startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
-        if startupinfo_factory is not None:
-            startupinfo = startupinfo_factory()
-            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-            startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
-            kwargs["startupinfo"] = startupinfo
-        return kwargs
 
     @staticmethod
     def _clean_browser_title(title: str) -> str:
