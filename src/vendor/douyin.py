@@ -29,6 +29,7 @@ _CONFIG_PATH = DOWNLOADER_CONFIG_PATH
 _DEFAULT_CONFIG = {
     "enabled": True,
     "timeout_seconds": 45,
+    "parser_connect_timeout_seconds": 5,
     "stream_read_timeout_seconds": 20,
     "slow_retry_enabled": True,
     "slow_retry_probe_seconds": 12,
@@ -584,10 +585,11 @@ class DouyinDownloadService:
                     share_url,
                     error_message,
                 )
+                failure_limit = 1 if isinstance(exc, (requests.ConnectionError, requests.Timeout)) else failure_threshold
                 self._failover_router.record_failure(
                     provider,
                     error_message,
-                    failure_threshold=failure_threshold,
+                    failure_threshold=failure_limit,
                     cooldown_seconds=cooldown_seconds,
                 )
                 builtin_errors.append(f"{provider_name}: {error_message}")
@@ -677,10 +679,15 @@ class DouyinDownloadService:
     ) -> tuple[Any, str]:
         self._check_cancelled(should_cancel)
         parser_url = self._build_parser_url(str(provider.get("base_url") or "").strip(), share_url)
+        timeout = max(5.0, float(self.load_config().get("timeout_seconds", 45) or 45))
+        connect_timeout = max(
+            1.0,
+            min(timeout, float(self.load_config().get("parser_connect_timeout_seconds", 5) or 5)),
+        )
         response = self._session().get(
             parser_url,
             headers=self._default_headers(),
-            timeout=float(self.load_config().get("timeout_seconds", 45)),
+            timeout=(connect_timeout, timeout),
             allow_redirects=True,
         )
         response.raise_for_status()

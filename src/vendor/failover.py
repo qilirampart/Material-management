@@ -56,8 +56,8 @@ class FailoverRouter:
         if available:
             return available
         if open_circuits:
-            self._logger.warning("[%s] All providers are open; retrying by priority order.", self._group)
-        return [provider for _, provider in indexed]
+            self._logger.warning("[%s] All providers are open; keeping them skipped until cooldown expires.", self._group)
+        return []
 
     def record_success(self, provider: dict[str, Any]) -> None:
         provider_name = self._provider_name(provider)
