@@ -72,6 +72,8 @@ class CandidateTableUiTests(unittest.TestCase):
 
         self.window.show_download_progress({
             "video_id": video_id,
+            "task_index": 2,
+            "task_total": 3,
             "received": 5 * 1048576,
             "total": 10 * 1048576,
             "percent": 50.0,
@@ -82,6 +84,8 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertEqual(self.window.table.item(0, 3).text(), title)
         self.assertEqual(self.window.table.item(0, 5).text(), "下载 50.0%")
         self.assertIn("1.0 MB/s", self.window.table.item(0, 5).toolTip())
+        self.assertEqual(self.window.work_status.text(), "处理中 2 / 共 3")
+        self.assertIn("已用时 5.0 秒", self.window.transfer_detail.text())
 
     def test_stage_progress_updates_one_row_without_full_table_refresh(self):
         with tempfile.TemporaryDirectory() as folder:

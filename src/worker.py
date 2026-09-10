@@ -1,6 +1,7 @@
 """Separate worker process; desktop remains responsive during network/FFmpeg work."""
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.batch import error_summary, run_batch
@@ -14,6 +15,7 @@ def main(request_path):
     log = Path(request_path).with_suffix(".events.jsonl")
 
     def emit(event):
+        event.setdefault("emitted_at", datetime.now(timezone.utc).isoformat())
         message = json.dumps(event, ensure_ascii=False)
         with log.open("a", encoding="utf-8") as handle:
             handle.write(message + "\n")

@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
         self.input_path = None
         self.current_id = ""
         self.current_stage = ""
+        self.batch_task_ids = []
         self.process = None
         self.batch_lock = None
         self.close_after = False
@@ -952,6 +953,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("当前批次没有待处理素材；可选中素材后点击重新检测")
             return
         operation = 'detect' if force else self.mode.currentData()
+        self.batch_task_ids = list(dict.fromkeys(selected))
         download_only = operation == 'download'
         if not download_only:
             try:
@@ -981,6 +983,7 @@ class MainWindow(QMainWindow):
         else:
             program, args = sys.executable, ["-m", "src.worker", str(self.request_path)]
         self.set_busy(True)
+        self.work_status.setText(f"等待处理 0 / 共 {len(self.batch_task_ids)}")
         self.process.start(program, args)
         self.event_timer.start()
         self.statusBar().showMessage(f"后台任务已启动 · {len(set(selected))} 条素材")
@@ -1024,7 +1027,7 @@ class MainWindow(QMainWindow):
             elif kind == "progress":
                 self.current_id = event["video_id"]
                 self.current_stage = event["stage"]
-                self.work_status.setText("运行中 1 / 上限 1")
+                self.show_task_position(event)
                 self.work_detail.setText(self.current_id + "\n" + self.current_stage)
                 self.download_bar.setRange(0, 0)
                 self.transfer_detail.setText(self.current_stage + '…')
@@ -1052,6 +1055,16 @@ class MainWindow(QMainWindow):
                 self.table.item(index, 7).setText(stage + '…')
                 break
 
+    def show_task_position(self, event):
+        total = event.get('task_total') or len(self.batch_task_ids)
+        index = event.get('task_index')
+        if index is None and event.get('video_id') in self.batch_task_ids:
+            index = self.batch_task_ids.index(event['video_id']) + 1
+        if total and index:
+            self.work_status.setText(f'处理中 {index} / 共 {total}')
+        else:
+            self.work_status.setText('处理中 · 并发上限 1')
+
     def show_download_progress(self, event):
         self.current_id = event['video_id']
         self.current_stage = '下载视频 / 音轨'
@@ -1061,13 +1074,14 @@ class MainWindow(QMainWindow):
         percent = event.get('percent')
         amount = size(received) + (' / ' + size(total) if total else ' / 总大小未知')
         speed = size(event['speed']) + '/s'
+        elapsed = received / event['speed'] if event.get('speed') else 0
         self.download_bar.setRange(0, 1000 if percent is not None else 0)
         if percent is not None:
             self.download_bar.setValue(round(percent * 10))
             self.download_bar.setFormat(f'{percent:.1f}%')
-        self.work_status.setText('运行中 1 / 上限 1')
+        self.show_task_position(event)
         self.work_detail.setText(self.current_id + '\n' + self.current_stage)
-        self.transfer_detail.setText(amount + '\n平均速度 ' + speed)
+        self.transfer_detail.setText(amount + f'\n平均速度 {speed} · 已用时 {elapsed:.1f} 秒')
         brief = f'下载 {percent:.1f}%' if percent is not None else '下载 ' + size(received)
         # Byte events update only the active row, not the entire candidate table.
         for index, row in enumerate(self.rows):
@@ -1080,6 +1094,7 @@ class MainWindow(QMainWindow):
         self.poll_events()
         self.event_timer.stop()
         self.current_id = ""
+        self.batch_task_ids = []
         self.work_status.setText("就绪 · 并发上限 1")
         self.download_bar.setRange(0, 1000)
         self.download_bar.setValue(0)

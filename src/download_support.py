@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import shutil
 import tempfile
 from pathlib import Path
@@ -58,7 +59,12 @@ class Downloader:
             meta = validate_video(source)
             emit({'type': 'progress', 'stage': '保存视频文件'})
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, staged)
+            try:
+                source.replace(staged)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV and getattr(exc, 'winerror', None) != 17:
+                    raise
+                shutil.copyfile(source, staged)
             staged.replace(target)
             return meta
         finally:

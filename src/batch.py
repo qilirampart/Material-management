@@ -167,6 +167,21 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
     logging.getLogger("src.vendor.douyin").setLevel(logging.CRITICAL)
     logging.getLogger("src.vendor.failover").setLevel(logging.CRITICAL)
     seen = set()
+    selected_set = set(selected_ids) if selected_ids is not None else None
+    work_ids = []
+    candidate_seen = set()
+    for row in rows:
+        candidate_id = row["video_id"]
+        if row["input_error"] or candidate_id in candidate_seen:
+            continue
+        if selected_set is not None and candidate_id not in selected_set:
+            continue
+        if limit is not None and len(work_ids) >= limit:
+            break
+        candidate_seen.add(candidate_id)
+        work_ids.append(candidate_id)
+    task_positions = {video_id: index for index, video_id in enumerate(work_ids, 1)}
+    task_total = len(work_ids)
 
     def emit(kind, **data):
         if on_event:
@@ -190,7 +205,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         id_ = row["video_id"]
         if row["input_error"] or id_ in seen:
             continue
-        if selected_ids is not None and id_ not in selected_ids:
+        if selected_set is not None and id_ not in selected_set:
             continue
         if should_stop and should_stop():
             persist(True)
@@ -199,8 +214,14 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         if limit is not None and len(seen) >= limit:
             break
         seen.add(id_)
+        task_index = task_positions[id_]
         if downloader is not None:
-            downloader.on_event = lambda event, video_id=id_: on_event({**event, 'video_id': video_id}) if on_event else None
+            downloader.on_event = lambda event, video_id=id_, index=task_index: on_event({
+                **event,
+                'video_id': video_id,
+                'task_index': index,
+                'task_total': task_total,
+            }) if on_event else None
         target = output / "videos" / f"{id_}.mp4"
         old = records.get(id_, {})
         if row.get('local_path'):
@@ -210,7 +231,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         r = {"video_id": id_, "status": "pending", "download": "未下载", "uploaded": False,
              "video_path": str(target), "reason": "", "frames": [], "hits": []}
         records[id_] = r
-        emit("progress", video_id=id_, stage="准备处理")
+        emit("progress", video_id=id_, stage="准备处理", task_index=task_index, task_total=task_total)
         print(f"[{len(seen)}] {id_} 下载/校验", flush=True)
         try:
             if not target.is_file() and (operation == 'detect' or row.get('local_path')):
@@ -218,7 +239,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                 persist()
                 continue
             if target.exists():
-                emit('progress', video_id=id_, stage='校验本地视频')
+                emit('progress', video_id=id_, stage='校验本地视频', task_index=task_index, task_total=task_total)
                 try:
                     meta = media.validate_video(target)
                 except (media.FFmpegError, ValueError):
@@ -253,12 +274,12 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                 continue
         persist()
         try:
-            emit("progress", video_id=id_, stage="抽取片头三帧")
+            emit("progress", video_id=id_, stage="抽取片头三帧", task_index=task_index, task_total=task_total)
             r["frames"] = media.extract_frames(target, output / "frames" / id_)
             for f in r["frames"]:
                 f["sha256"] = file_hash(f["path"])
             print("  三帧已提取，调用图片模型", flush=True)
-            emit("progress", video_id=id_, stage="图片识别")
+            emit("progress", video_id=id_, stage="图片识别", task_index=task_index, task_total=task_total)
             r.update(vision.review(r["frames"], profile, logo, phrases))
             r["fingerprint"] = stamp
         except Exception as exc:
