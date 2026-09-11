@@ -52,6 +52,13 @@ class CandidateTableUiTests(unittest.TestCase):
             "https://www.douyin.com/video/7681538825608236331",
         )
 
+    def test_review_list_shows_the_matching_candidate_number(self):
+        self.window.change_page(1)
+
+        review_text = self.window.review.materials.item(0).text()
+        self.assertTrue(review_text.startswith("编号 1 · "))
+        self.assertIn("7681538825608236331", review_text)
+
     def test_unchecking_updates_the_visible_selection_label(self):
         self.window.table.item(0, 0).setCheckState(Qt.Unchecked)
         self.app.processEvents()

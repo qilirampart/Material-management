@@ -523,16 +523,22 @@ class MainWindow(QMainWindow):
     def change_page(self, index):
         self.pages.setCurrentIndex(index)
         if index == 1:
-            self.review.materials.clear()
-            from PySide6.QtWidgets import QListWidgetItem
-            for row in self.rows:
-                item = QListWidgetItem(str(row['source']['剧名'] or '') + '\n' + row['video_id'] + '\n' + self.effective_status(row)[1])
-                item.setData(Qt.UserRole, row['video_id'])
-                self.review.materials.addItem(item)
+            self._populate_review_materials()
         if index == 2:
             self.platform.set_materials(self.rows, self.records, self.notes, self.checked, self.folder)
         if index != 1:
             self.review.player.pause()
+
+    def _populate_review_materials(self):
+        self.review.materials.clear()
+        from PySide6.QtWidgets import QListWidgetItem
+        for index, row in enumerate(self.rows, 1):
+            drama = str(row['source']['剧名'] or '')
+            item = QListWidgetItem(
+                f"编号 {index} · {drama}\n{row['video_id']}\n{self.effective_status(row)[1]}"
+            )
+            item.setData(Qt.UserRole, row['video_id'])
+            self.review.materials.addItem(item)
 
     def is_running(self):
         return self.process is not None and self.process.state() != QProcess.NotRunning
@@ -872,12 +878,7 @@ class MainWindow(QMainWindow):
         ids = self.focused_ids()
         if not ids:
             return
-        self.review.materials.clear()
-        from PySide6.QtWidgets import QListWidgetItem
-        for r in self.rows:
-            item = QListWidgetItem(str(r['source']['剧名'] or '') + '\n' + r['video_id'] + '\n' + self.effective_status(r)[1])
-            item.setData(Qt.UserRole, r['video_id'])
-            self.review.materials.addItem(item)
+        self._populate_review_materials()
         row = next(r for r in self.rows if r["video_id"] == ids[0])
         self.review.show_record(row, self.records.get(ids[0], {}), self.notes.get(ids[0], {}), self.effective_status(row)[1])
         self.navigation.setCurrentRow(1)
