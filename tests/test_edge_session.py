@@ -31,11 +31,12 @@ class EdgeSessionTests(unittest.TestCase):
 
     @patch("src.edge_session.find_edge", return_value=Path("C:/Edge/msedge.exe"))
     def test_command_uses_dedicated_profile_and_debug_port(self, _find):
+        profile = Path("C:/session")
         command = build_edge_command(
-            "https://market.wuread.cn/market-admin/", Path("C:/session"), 9333
+            "https://market.wuread.cn/market-admin/", profile, 9333
         )
         self.assertIn("--remote-debugging-port=9333", command)
-        self.assertIn("--user-data-dir=C:\\session", command)
+        self.assertIn(f"--user-data-dir={profile.resolve()}", command)
         self.assertEqual(command[-1], "https://market.wuread.cn/market-admin/")
 
     def test_rejects_credential_bearing_url(self):
