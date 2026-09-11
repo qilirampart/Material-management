@@ -3,11 +3,28 @@ from unittest.mock import Mock
 
 import requests
 
-from src.vendor.douyin import DouyinDownloadError, DouyinDownloadService
+from src.vendor.douyin import DouyinDownloadError, DouyinDownloadResult, DouyinDownloadService
 from src.vendor.failover import FailoverRouter
 
 
 class ParserFailoverTests(unittest.TestCase):
+    def test_full_video_url_uses_browser_before_external_parser(self):
+        service = DouyinDownloadService()
+        service._config = {"enabled": True, "browser_first_enabled": True}
+        expected = DouyinDownloadResult(
+            share_url="https://www.douyin.com/video/123",
+            parser_url="browser://douyin-current-src",
+            video_url="https://cdn.example/video.mp4",
+            local_path="video.mp4",
+        )
+        service._download_via_browser_fallback = Mock(return_value=expected)
+        service._resolve_share_url = Mock(side_effect=AssertionError("parser should be a fallback"))
+
+        result = service.download_from_text("https://www.douyin.com/video/123")
+
+        self.assertIs(result, expected)
+        service._download_via_browser_fallback.assert_called_once()
+
     def test_fast_full_video_url_skips_local_share_page_request(self):
         provider = {"name": "parser", "priority": 1, "base_url": "https://parser.example/api"}
         service = DouyinDownloadService()

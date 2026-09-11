@@ -25,6 +25,8 @@ CancelCallback = Callable[[], bool]
 _CONFIG_PATH = DOWNLOADER_CONFIG_PATH
 _DEFAULT_CONFIG = {
     "enabled": True,
+    # Browser probing is the dependable path when a third-party parser is down.
+    "browser_first_enabled": True,
     # Full /video/<id> links can skip the fragile share-page resolver.
     "fast_resolve_enabled": True,
     "timeout_seconds": 45,
@@ -83,6 +85,24 @@ class DouyinDownloadService:
 
         title: str | None = None
         author: str | None = None
+        browser_first_error = ""
+
+        if self.load_config().get("browser_first_enabled", True) and _AWEME_ID_PATTERN.search(share_url):
+            try:
+                return self._download_via_browser_fallback(
+                    share_url,
+                    title=title,
+                    author=author,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
+            except DouyinDownloadError as exc:
+                browser_first_error = str(exc).strip() or "unknown browser error"
+                self._logger.warning(
+                    "Browser-first Douyin download failed; falling back to parser. share_url=%s error=%s",
+                    share_url,
+                    browser_first_error,
+                )
 
         try:
             payload, parser_url = self._resolve_share_url(share_url, should_cancel=should_cancel)
@@ -96,6 +116,14 @@ class DouyinDownloadService:
                 share_url,
                 parser_error,
             )
+            if browser_first_error:
+                detail = f"browser-first: {browser_first_error}; parser: {parser_error}"
+                hint = self._download_failure_hint(detail, share_url=share_url)
+                raise DouyinDownloadError(
+                    "Failed to download Douyin video after browser-first and parser fallback both failed. details: "
+                    + detail
+                    + hint
+                ) from exc
             try:
                 return self._download_via_browser_fallback(
                     share_url,
