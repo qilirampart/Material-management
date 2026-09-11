@@ -11,7 +11,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.3.4
+        default: 0.3.5
         type: string
 
 permissions:

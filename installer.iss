@@ -1,6 +1,6 @@
 [Setup]
 #ifndef AppVersion
-#define AppVersion "0.3.4"
+#define AppVersion "0.3.5"
 #endif
 AppId={{22F74318-4740-49D9-A5F8-107A83EA6B24}
 AppName=点众素材投放助手
