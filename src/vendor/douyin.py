@@ -25,6 +25,8 @@ CancelCallback = Callable[[], bool]
 _CONFIG_PATH = DOWNLOADER_CONFIG_PATH
 _DEFAULT_CONFIG = {
     "enabled": True,
+    # Full /video/<id> links can skip the fragile share-page resolver.
+    "fast_resolve_enabled": True,
     "timeout_seconds": 45,
     "parser_connect_timeout_seconds": 5,
     "browser_probe_timeout_seconds": 60,
@@ -419,14 +421,18 @@ class DouyinDownloadService:
 
         builtin_errors: list[str] = []
         self._check_cancelled(should_cancel)
-        try:
-            payload = self._resolve_share_url_locally(share_url, should_cancel=should_cancel)
-            self._logger.info("Resolved Douyin share url locally. share_url=%s", share_url)
-            return payload, "builtin://douyin-share-page"
-        except Exception as exc:  # noqa: BLE001
-            error_message = str(exc)
-            self._logger.warning("Local Douyin resolver failed. share_url=%s error=%s", share_url, error_message)
-            builtin_errors.append(f"builtin: {error_message}")
+        fast_full_url = bool(config.get("fast_resolve_enabled", True) and _AWEME_ID_PATTERN.search(share_url))
+        if not fast_full_url:
+            try:
+                payload = self._resolve_share_url_locally(share_url, should_cancel=should_cancel)
+                self._logger.info("Resolved Douyin share url locally. share_url=%s", share_url)
+                return payload, "builtin://douyin-share-page"
+            except Exception as exc:  # noqa: BLE001
+                error_message = str(exc)
+                self._logger.warning("Local Douyin resolver failed. share_url=%s error=%s", share_url, error_message)
+                builtin_errors.append(f"builtin: {error_message}")
+        else:
+            self._logger.info("Fast resolve enabled; skipping local share-page resolver. share_url=%s", share_url)
 
         api_config = self._api_config_service.load_config()
         parser_section = api_config.get("douyin_parser", {})

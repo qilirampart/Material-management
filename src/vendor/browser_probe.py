@@ -233,10 +233,11 @@ class _DouyinBrowserProbe(QObject):
     def _finish_when_complete(self) -> None:
         if not self._video_url:
             return
-        # Give the player time to expose its full-play and adaptive variants before
-        # selecting a URL. The first requested stream is often a low-bitrate preview.
+        # In fast mode, start as soon as the first usable stream pair is visible.
+        # Waiting for adaptive variants adds latency and is unnecessary when the
+        # caller does not require the highest bitrate.
         if not self._settle_timer.isActive():
-            self._settle_timer.start(2200)
+            self._settle_timer.start(350)
 
     def _finish_collected_streams(self) -> None:
         if self._finished or not self._video_url:

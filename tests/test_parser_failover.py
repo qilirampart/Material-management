@@ -8,6 +8,21 @@ from src.vendor.failover import FailoverRouter
 
 
 class ParserFailoverTests(unittest.TestCase):
+    def test_fast_full_video_url_skips_local_share_page_request(self):
+        provider = {"name": "parser", "priority": 1, "base_url": "https://parser.example/api"}
+        service = DouyinDownloadService()
+        service._config = {"enabled": True, "fast_resolve_enabled": True}
+        service._api_config_service.data = {"douyin_parser": {"providers": [provider]}}
+        service._resolve_share_url_locally = Mock(side_effect=AssertionError("local resolver should be skipped"))
+        service._resolve_share_url_via_service = Mock(
+            return_value=({"video_url": "https://cdn.example/video.mp4"}, "https://parser.example/api")
+        )
+
+        payload, parser_url = service._resolve_share_url("https://www.douyin.com/video/123")
+
+        self.assertEqual(payload["video_url"], "https://cdn.example/video.mp4")
+        self.assertEqual(parser_url, "https://parser.example/api")
+
     def test_all_open_providers_stay_skipped_during_cooldown(self):
         provider = {"name": "only", "priority": 1}
         router = FailoverRouter("test")
