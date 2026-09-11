@@ -1,0 +1,122 @@
+name: Build desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source branch or tag to build
+        required: true
+        default: main
+        type: string
+      version:
+        description: Release version without the v prefix
+        required: true
+        default: 0.3.1
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip -r requirements.txt
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -q
+
+  build-windows:
+    name: Build Windows installer
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip -r requirements.txt pyinstaller
+          choco install ffmpeg innosetup --no-progress --yes
+      - name: Build Windows installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python scripts/build_windows.py
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${env:RELEASE_VERSION}" installer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/素材投放助手-安装包-${{ inputs.version }}.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS app
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip -r requirements.txt pyinstaller
+          brew install ffmpeg
+      - name: Build macOS app bundle
+        run: python scripts/build_macos.py
+      - name: Package macOS app
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "release/素材投放助手.app" "release/素材投放助手-macos-${RELEASE_VERSION}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: release/素材投放助手-macos-${{ inputs.version }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          target_commitish: ${{ inputs.source_ref }}
+          name: v${{ inputs.version }}
+          generate_release_notes: true
+          body: |
+            Windows: 下载 `.exe` 安装包后直接运行。
+
+            macOS: 当前为未签名构建包。首次打开如被 Gatekeeper 拦截，请在 Finder 中按住 Control 点击应用后选择“打开”。
+
+            平台工作台的内嵌 Edge 上传能力仅支持 Windows；macOS 可使用素材下载、检测和复核功能。
+          files: release-assets/*

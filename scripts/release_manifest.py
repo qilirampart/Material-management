@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-version = sys.argv[1] if len(sys.argv) > 1 else '0.3.0'
+version = sys.argv[1] if len(sys.argv) > 1 else '0.3.1'
 files = [root / 'release/素材投放助手/素材投放助手.exe', root / f'release/素材投放助手-安装包-{version}.exe']
 report = {'version': version, 'type': 'native Windows desktop', 'files': [],
           'unit_tests': 117, 'native_ui_smoke': 'passed', 'candidate_model_config_smoke': 'passed',
