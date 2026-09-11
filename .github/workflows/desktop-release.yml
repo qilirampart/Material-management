@@ -11,7 +11,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.3.3
+        default: 0.3.4
         type: string
 
 permissions:
@@ -118,7 +118,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
-          target_commitish: ${{ inputs.source_ref }}
           name: v${{ inputs.version }}
           generate_release_notes: true
           body: |
