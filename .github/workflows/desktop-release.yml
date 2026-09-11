@@ -11,7 +11,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.3.2
+        default: 0.3.3
         type: string
 
 permissions:
@@ -45,6 +45,7 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
         run: python -m unittest discover -s tests -q
 
   build-windows:
