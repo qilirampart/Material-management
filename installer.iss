@@ -1,13 +1,13 @@
 [Setup]
 AppId={{22F74318-4740-49D9-A5F8-107A83EA6B24}
 AppName=点众素材投放助手
-AppVersion=0.2.2
+AppVersion=0.3.0
 AppPublisher=点众
 DefaultDirName={localappdata}\Programs\DianzhongMaterialAssistant
 DefaultGroupName=点众素材投放助手
 PrivilegesRequired=lowest
 OutputDir=release
-OutputBaseFilename=素材投放助手-安装包-0.2.2
+OutputBaseFilename=素材投放助手-安装包-0.3.0
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
