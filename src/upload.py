@@ -7,6 +7,7 @@ import json
 import filecmp
 import time
 import uuid
+from threading import Lock
 from datetime import date
 from pathlib import Path
 
@@ -28,6 +29,15 @@ FIXED_DEPARTMENTS = [
     "深圳免费投放组", "深圳小说投放部", "深圳投放组", "百度投放组", "自动化投放组",
     "自投四组", "设计部-短剧", "重庆-自投",
 ]
+
+_STAGING_LOCKS_GUARD = Lock()
+_STAGING_LOCKS: dict[str, Lock] = {}
+
+
+def _lock_for_staging_folder(target_folder: Path) -> Lock:
+    key = str(target_folder.resolve())
+    with _STAGING_LOCKS_GUARD:
+        return _STAGING_LOCKS.setdefault(key, Lock())
 
 
 def _replace_staged_file(temporary: Path, target: Path) -> None:
@@ -132,6 +142,11 @@ def build_upload_plan(
 def stage_upload_batch(batch, staging_root, *, normalize_bitrate=False):
     target_folder = Path(staging_root) / f"batch-{int(batch['index']):02d}"
     target_folder.mkdir(parents=True, exist_ok=True)
+    with _lock_for_staging_folder(target_folder):
+        return _stage_upload_batch(batch, target_folder, normalize_bitrate=normalize_bitrate)
+
+
+def _stage_upload_batch(batch, target_folder: Path, *, normalize_bitrate=False):
     staged_items = []
     for item in batch.get("items", []):
         source = Path(item["original_path"])
