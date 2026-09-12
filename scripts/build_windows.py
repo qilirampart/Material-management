@@ -20,7 +20,7 @@ def _find_real_binary(name: str) -> Path:
 
     chocolatey_root = Path(r"C:\ProgramData\chocolatey\lib")
     if chocolatey_root.is_dir():
-        matches = sorted(chocolatey_root.glob(f"{name}/tools/**/{name}.exe"))
+        matches = sorted(chocolatey_root.glob(f"ffmpeg/tools/**/{name}.exe"))
         if matches:
             return max(matches, key=lambda path: path.stat().st_size)
     raise SystemExit(f"{name} standalone binary is required; PATH points to a launcher shim")
