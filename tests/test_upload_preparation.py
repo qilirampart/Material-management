@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -336,6 +337,30 @@ class UploadPreparationTests(unittest.TestCase):
             target = root / "staging" / "batch-01" / "upload.mp4"
             self.assertEqual(target.read_bytes(), b"video-content")
             self.assertTrue(all(result["items"][0]["upload_path"] == str(target) for result in results))
+
+    def test_staging_retries_a_transient_windows_file_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp4"
+            source.write_bytes(b"video-content")
+            batch = {
+                "index": 1,
+                "items": [{"original_path": str(source), "upload_name": "upload.mp4"}],
+            }
+            original_replace = os.replace
+            attempts = []
+
+            def locked_once(temporary, target):
+                attempts.append((temporary, target))
+                if len(attempts) == 1:
+                    raise PermissionError("target is temporarily locked")
+                return original_replace(temporary, target)
+
+            with patch("src.upload.os.replace", side_effect=locked_once), patch("src.upload.time.sleep"):
+                staged = stage_upload_batch(batch, root / "staging")
+
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(Path(staged["items"][0]["upload_path"]).read_bytes(), b"video-content")
 
     def test_confirmed_drama_mapping_and_uploader_are_remembered_locally(self):
         with tempfile.TemporaryDirectory() as folder:

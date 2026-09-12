@@ -5,6 +5,7 @@ import os
 import shutil
 import json
 import filecmp
+import time
 import uuid
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,18 @@ FIXED_DEPARTMENTS = [
     "深圳免费投放组", "深圳小说投放部", "深圳投放组", "百度投放组", "自动化投放组",
     "自投四组", "设计部-短剧", "重庆-自投",
 ]
+
+
+def _replace_staged_file(temporary: Path, target: Path) -> None:
+    """Replace a staged file, tolerating Windows' short-lived sharing locks."""
+    for attempt in range(5):
+        try:
+            os.replace(temporary, target)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.025 * (attempt + 1))
 
 
 def eligible_materials(rows, records, notes, selected_ids, *, require_files=True):
@@ -156,7 +169,7 @@ def stage_upload_batch(batch, staging_root, *, normalize_bitrate=False):
                 except OSError:
                     shutil.copy2(source, temporary)
                 upload_metadata = source_metadata
-            os.replace(temporary, target)
+            _replace_staged_file(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
         staged_items.append({
