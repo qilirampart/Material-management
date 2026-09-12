@@ -154,6 +154,25 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertEqual(self.window.download_bar.format(), "第 2 / 5 个")
         self.assertIn("7681538825608236331", self.window.work_detail.text())
 
+    def test_bitrate_completion_shows_encoder_and_stage_timings(self):
+        self.window.show_bitrate_progress({
+            "phase": "completed",
+            "video_id": "7681538825608236331",
+            "transcode": {
+                "video_encoder": "h264_nvenc",
+                "hardware_accelerated": True,
+                "encoding_seconds": 12.4,
+                "validation_seconds": 1.6,
+                "total_seconds": 14.1,
+            },
+        })
+
+        details = self.window.work_detail.text()
+        self.assertIn("GPU/h264_nvenc", details)
+        self.assertIn("12.4", details)
+        self.assertIn("1.6", details)
+        self.assertIn("14.1", details)
+
     def test_backfilled_quality_is_displayed_and_saved_for_old_batch(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

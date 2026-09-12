@@ -67,7 +67,12 @@ def enhance_batch_bitrates(batch_folder, records, video_ids, progress=None, shou
         state['records'] = durable_records
         save_json(state_path, state)
         if progress:
-            progress({'phase': 'completed', 'video_id': video_id})
+            metadata = values.get('bitrate_enhanced_metadata', {})
+            progress({
+                'phase': 'completed',
+                'video_id': video_id,
+                'transcode': metadata.get('transcode', {}) if isinstance(metadata, dict) else {},
+            })
 
     def record_failure(video_id, error):
         failed[video_id] = type(error).__name__
@@ -612,6 +617,11 @@ class MainWindow(QMainWindow):
                 quality_parts.append(
                     '达标副本 ' + describe_bitrate(record.get('bitrate_enhanced_metadata'))
                 )
+            transcode = record.get('bitrate_enhanced_metadata', {}).get('transcode', {})
+            if enhanced_path.is_file() and isinstance(transcode, dict) and transcode.get('total_seconds') is not None:
+                encoder = str(transcode.get('video_encoder') or '未知编码器')
+                device = 'GPU' if transcode.get('hardware_accelerated') else 'CPU'
+                quality_parts.append(f'转码 {device}/{encoder} {float(transcode["total_seconds"]):.1f} 秒')
             cells = [
                 '不可选' if row['input_error'] else ('已选择' if is_checked else '选择'),
                 str(index + 1),
@@ -824,6 +834,20 @@ class MainWindow(QMainWindow):
 
     def show_bitrate_progress(self, event):
         phase = event.get('phase')
+        if phase == 'completed':
+            details = event.get('transcode', {})
+            if not isinstance(details, dict) or details.get('total_seconds') is None:
+                return
+            encoder = str(details.get('video_encoder') or '未知编码器')
+            device = 'GPU' if details.get('hardware_accelerated') else 'CPU'
+            encoding = float(details.get('encoding_seconds') or 0)
+            validation = float(details.get('validation_seconds') or 0)
+            total = float(details.get('total_seconds') or 0)
+            self.work_detail.setText(
+                f"{event.get('video_id', '')}\n"
+                f"已完成：{device}/{encoder} · 编码 {encoding:.1f} 秒 · 校验 {validation:.1f} 秒 · 总计 {total:.1f} 秒"
+            )
+            return
         if phase in {'encoding', 'validating'}:
             phase_text = '正在编码达标副本' if phase == 'encoding' else '正在完整复检输出文件'
             self.work_detail.setText(
