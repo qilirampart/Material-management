@@ -5,11 +5,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openpyxl import Workbook
-from src.batch import run_batch
+from src.batch import download_concurrency_for, run_batch
 from src.vision import classify
 
 
 class DesktopWorkerTests(unittest.TestCase):
+    def test_download_concurrency_is_limited_to_safe_browser_worker_count(self):
+        self.assertEqual(download_concurrency_for({}, "download"), 1)
+        self.assertEqual(download_concurrency_for({"download_concurrency": 2}, "download"), 2)
+        self.assertEqual(download_concurrency_for({"download_concurrency": 99}, "both"), 3)
+        self.assertEqual(download_concurrency_for({"download_concurrency": 3}, "detect"), 1)
+
     def test_progress_events_report_position_in_selected_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

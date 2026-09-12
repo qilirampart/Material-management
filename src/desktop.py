@@ -269,6 +269,15 @@ class MainWindow(QMainWindow):
         self.mode.addItem('仅下载', 'download')
         self.mode.addItem('仅检测', 'detect')
         toolbar.addWidget(self.mode)
+        self.download_concurrency = QComboBox()
+        self.download_concurrency.addItem('下载并发 1（稳定）', 1)
+        self.download_concurrency.addItem('下载并发 2（加速）', 2)
+        self.download_concurrency.addItem('下载并发 3（较高占用）', 3)
+        saved_concurrency = int(self.config.get('download_concurrency', 1) or 1)
+        self.download_concurrency.setCurrentIndex(max(0, min(saved_concurrency, 3) - 1))
+        self.download_concurrency.setToolTip('浏览器探针会占用网络和内存；默认串行，2 并发通常更均衡。')
+        self.download_concurrency.currentIndexChanged.connect(self.save_download_concurrency)
+        toolbar.addWidget(self.download_concurrency)
         self.start_button = button('处理勾选素材', self.start_or_pause, True)
         toolbar.addWidget(self.start_button)
         box.addLayout(toolbar)
@@ -313,7 +322,7 @@ class MainWindow(QMainWindow):
         side.setContentsMargins(0, 0, 0, 0)
         self.task_side.setFixedWidth(260)
         work, box = card('后台任务')
-        self.work_status = label('就绪 · 并发上限 1', 'section')
+        self.work_status = label(f'就绪 · 下载并发 {self.download_concurrency.currentData() or 1}', 'section')
         box.addWidget(self.work_status)
         self.work_detail = label('勾选候选素材后开始处理。\n任务在独立进程中排队执行。')
         box.addWidget(self.work_detail)
@@ -559,7 +568,7 @@ class MainWindow(QMainWindow):
     def set_busy(self, busy):
         for control in [
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
-            self.mode, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
+            self.mode, self.download_concurrency, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
         ]:
@@ -916,12 +925,23 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("复核记录已保存；自动检测证据保持可追溯")
 
     def save_settings(self, config):
+        config = dict(config)
+        # The task-page selector is the source of truth for this setting; the
+        # settings dialog does not expose a second copy that could be stale.
+        config['download_concurrency'] = int(self.download_concurrency.currentData() or 1)
         self.config = config
         self.platform.config = config
         self.platform.address.setText(config.get("platform_url", ""))
         save_json(self.config_path, config)
         self.refresh_fingerprint()
         self.refresh_table()
+
+    def save_download_concurrency(self):
+        self.config['download_concurrency'] = int(self.download_concurrency.currentData() or 1)
+        try:
+            save_json(self.config_path, self.config)
+        except OSError:
+            self.statusBar().showMessage('下载并发设置未能保存；本次任务仍会使用当前选择。')
 
     def export(self):
         if not self.folder:
@@ -996,7 +1016,9 @@ class MainWindow(QMainWindow):
         self.stop_path = self.runtime / f"job-{token}.stop"
         self.event_path = self.request_path.with_suffix(".events.jsonl")
         self.event_offset = 0
-        save_json(self.request_path, {"input_path": str(self.input_path), "output": str(self.folder), "config": self.config,
+        task_config = dict(self.config)
+        task_config["download_concurrency"] = int(self.download_concurrency.currentData() or 1)
+        save_json(self.request_path, {"input_path": str(self.input_path), "output": str(self.folder), "config": task_config,
                                      "resume": True, "operation": operation, "selected_ids": list(dict.fromkeys(selected)),
                                      "force_review": force, "stop_file": str(self.stop_path)})
         self.process = QProcess(self)
@@ -1008,7 +1030,7 @@ class MainWindow(QMainWindow):
         else:
             program, args = sys.executable, ["-m", "src.worker", str(self.request_path)]
         self.set_busy(True)
-        self.work_status.setText(f"等待处理 0 / 共 {len(self.batch_task_ids)}")
+        self.work_status.setText(f"等待处理 0 / 共 {len(self.batch_task_ids)} · 下载并发 {task_config['download_concurrency']}")
         self.process.start(program, args)
         self.event_timer.start()
         self.statusBar().showMessage(f"后台任务已启动 · {len(set(selected))} 条素材")
@@ -1085,6 +1107,11 @@ class MainWindow(QMainWindow):
         index = event.get('task_index')
         if index is None and event.get('video_id') in self.batch_task_ids:
             index = self.batch_task_ids.index(event['video_id']) + 1
+        if event.get('workers', 1) > 1 and event.get('stage') == '并发下载中':
+            self.work_status.setText(
+                f"并发下载中 {event.get('running', 0)} / {event['workers']} · 共 {total}"
+            )
+            return
         if total and index:
             self.work_status.setText(f'处理中 {index} / 共 {total}')
         else:
@@ -1120,7 +1147,7 @@ class MainWindow(QMainWindow):
         self.event_timer.stop()
         self.current_id = ""
         self.batch_task_ids = []
-        self.work_status.setText("就绪 · 并发上限 1")
+        self.work_status.setText("就绪 · 下载并发 " + str(self.download_concurrency.currentData() or 1))
         self.download_bar.setRange(0, 1000)
         self.download_bar.setValue(0)
         self.download_bar.setFormat('本轮已结束')

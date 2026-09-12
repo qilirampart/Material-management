@@ -31,5 +31,9 @@ def main(request_path):
 
 
 if __name__ == "__main__":
+    # Required when this worker is bundled as a Windows executable and creates
+    # child download processes for browser-backed concurrency.
+    import multiprocessing
+    multiprocessing.freeze_support()
     sys.stdout.reconfigure(encoding="utf-8")
     raise SystemExit(main(sys.argv[1]))

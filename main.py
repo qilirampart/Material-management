@@ -6,6 +6,10 @@ from src.paths import DATA_ROOT, prepare_environment
 
 
 if __name__ == "__main__":
+    # Handle PyInstaller's child-process arguments before opening the desktop.
+    # Browser-backed download concurrency uses ProcessPoolExecutor on Windows.
+    import multiprocessing
+    multiprocessing.freeze_support()
     prepare_environment()
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         from src.worker import main

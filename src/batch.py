@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -22,6 +23,43 @@ def error_summary(exc):
     text = re.sub(r"https?://[^\s'\"<>]+", "[地址已隐藏]", str(exc))
     text = re.sub(r"(?i)(api[_-]?key|token|authorization|cookie)[=:][^\s,;]+", r"\1=[隐藏]", text)
     return f"{type(exc).__name__}: {text[:1500]}"
+
+
+def download_concurrency_for(config, operation):
+    """Return a conservative process count for browser-backed downloads."""
+    if operation not in {"download", "both"}:
+        return 1
+    try:
+        requested = int(config.get("download_concurrency", 1))
+    except (TypeError, ValueError):
+        requested = 1
+    # Each worker owns a Qt WebEngine probe. More than three competing probes
+    # increases failure risk and did not improve the measured wall-clock time.
+    return max(1, min(requested, 3))
+
+
+def _download_worker(url, target_text, config, allow_redownload):
+    """Run one download in its own process so Qt WebEngine is never shared."""
+    import logging
+    # Windows process spawning starts a fresh interpreter, so the parent
+    # logger settings are not inherited.
+    logging.getLogger("src.vendor.douyin").setLevel(logging.CRITICAL)
+    logging.getLogger("src.vendor.failover").setLevel(logging.CRITICAL)
+    target = Path(target_text)
+    try:
+        if target.is_file():
+            try:
+                metadata = media.validate_video(target)
+                return {"ok": True, "metadata": metadata}
+            except (media.FFmpegError, ValueError):
+                if not allow_redownload:
+                    raise
+                import uuid
+                target.replace(target.with_name(f"{target.stem}.invalid-{uuid.uuid4().hex[:8]}{target.suffix}"))
+        metadata = Downloader(config).download(url, target)
+        return {"ok": True, "metadata": metadata}
+    except Exception as exc:  # Worker results must be serializable and safe for UI logs.
+        return {"ok": False, "reason": error_summary(exc)}
 
 
 def read_input(path):
@@ -201,6 +239,59 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
             print("结果Excel正被占用；JSON进度已保存，关闭Excel后使用 export 命令导出。", flush=True)
 
     persist()
+    parallel_failures = {}
+    download_concurrency = download_concurrency_for(config, operation)
+    if download_concurrency > 1:
+        jobs = []
+        scheduled_ids = set()
+        for row in rows:
+            id_ = row["video_id"]
+            if id_ in scheduled_ids or id_ not in task_positions or row.get("local_path"):
+                continue
+            target = output / "videos" / f"{id_}.mp4"
+            # Existing files are validated by the normal path below. Only files
+            # that need network work enter independent browser processes.
+            if target.is_file():
+                continue
+            scheduled_ids.add(id_)
+            jobs.append((id_, row["url"], str(target), task_positions[id_]))
+
+        if jobs:
+            emit("download_batch", running=0, total=len(jobs), workers=download_concurrency)
+            job_iterator = iter(jobs)
+            futures = {}
+            paused = False
+
+            def submit_available(executor):
+                nonlocal paused
+                while len(futures) < download_concurrency and not paused:
+                    if should_stop and should_stop():
+                        paused = True
+                        break
+                    try:
+                        video_id, url, target, task_index = next(job_iterator)
+                    except StopIteration:
+                        break
+                    future = executor.submit(_download_worker, url, target, config, True)
+                    futures[future] = video_id
+                    emit("progress", video_id=video_id, stage="并发下载中",
+                         task_index=task_index, task_total=task_total,
+                         running=len(futures), workers=download_concurrency)
+
+            with ProcessPoolExecutor(max_workers=download_concurrency) as executor:
+                submit_available(executor)
+                while futures:
+                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        video_id = futures.pop(future)
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = {"ok": False, "reason": error_summary(exc)}
+                        if not result.get("ok"):
+                            parallel_failures[video_id] = result.get("reason", "下载失败")
+                    submit_available(executor)
+
     for row in rows:
         id_ = row["video_id"]
         if row["input_error"] or id_ in seen:
@@ -231,6 +322,11 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         r = {"video_id": id_, "status": "pending", "download": "未下载", "uploaded": False,
              "video_path": str(target), "reason": "", "frames": [], "hits": []}
         records[id_] = r
+        if id_ in parallel_failures:
+            r.update(status="download_failed", reason=f"下载或校验失败：{parallel_failures[id_]}；可用 --resume 重试")
+            persist()
+            print("  下载失败", flush=True)
+            continue
         emit("progress", video_id=id_, stage="准备处理", task_index=task_index, task_total=task_total)
         print(f"[{len(seen)}] {id_} 下载/校验", flush=True)
         try:
