@@ -4,10 +4,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.media import (
+    FFmpegError,
     describe_bitrate,
     describe_video,
     effective_video_bitrate_bps,
     extract_frames,
+    preferred_hardware_h264_encoder,
     run,
     transcode_for_upload_bitrate,
     validate_video,
@@ -15,6 +17,17 @@ from src.media import (
 
 
 class MediaTests(unittest.TestCase):
+    def test_prefers_nvidia_then_intel_then_amd_hardware_h264_encoder(self):
+        output = "\n".join([
+            " V....D h264_amf            AMD AMF H.264 Encoder",
+            " V....D h264_qsv            H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (Intel Quick Sync Video acceleration)",
+            " V....D h264_nvenc          NVIDIA NVENC H.264 encoder",
+        ])
+
+        self.assertEqual(preferred_hardware_h264_encoder(output), "h264_nvenc")
+        self.assertEqual(preferred_hardware_h264_encoder(" V....D h264_qsv Intel"), "h264_qsv")
+        self.assertIsNone(preferred_hardware_h264_encoder(" V....D libx264 H.264"))
+
     @patch("src.media.validate_video")
     @patch("src.media.run")
     @patch("src.media.probe")
@@ -25,14 +38,36 @@ class MediaTests(unittest.TestCase):
         validate_video.return_value = {"video_bitrate_bps": 4_200_000}
         phases = []
         with tempfile.TemporaryDirectory() as folder:
-            transcode_for_upload_bitrate(
-                Path(folder) / "source.mp4",
-                Path(folder) / "output.mp4",
-                progress=phases.append,
-            )
+            with patch("src.media.hardware_h264_encoder", return_value=None):
+                transcode_for_upload_bitrate(
+                    Path(folder) / "source.mp4",
+                    Path(folder) / "output.mp4",
+                    progress=phases.append,
+                )
 
         self.assertEqual(phases, ["encoding", "validating"])
         run_ffmpeg.assert_called_once()
+
+    @patch("src.media.validate_video")
+    @patch("src.media.run")
+    @patch("src.media.probe")
+    @patch("src.media.hardware_h264_encoder", return_value="h264_nvenc")
+    def test_bitrate_transcode_falls_back_to_cpu_when_hardware_encoder_fails(
+        self, hardware_encoder, probe_video, run_ffmpeg, validate_video
+    ):
+        probe_video.return_value = {"duration": 10}
+        validate_video.return_value = {"video_bitrate_bps": 4_200_000}
+        run_ffmpeg.side_effect = [FFmpegError("NVENC unavailable"), ""]
+        with tempfile.TemporaryDirectory() as folder:
+            metadata = transcode_for_upload_bitrate(
+                Path(folder) / "source.mp4", Path(folder) / "output.mp4"
+            )
+
+        self.assertEqual(run_ffmpeg.call_count, 2)
+        self.assertIn("h264_nvenc", run_ffmpeg.call_args_list[0].args[0])
+        self.assertIn("libx264", run_ffmpeg.call_args_list[1].args[0])
+        self.assertEqual(metadata["transcode"]["video_encoder"], "libx264")
+        self.assertFalse(metadata["transcode"]["hardware_accelerated"])
 
     def test_probe_reports_download_quality_information(self):
         with tempfile.TemporaryDirectory() as folder:
