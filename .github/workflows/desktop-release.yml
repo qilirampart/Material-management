@@ -71,10 +71,12 @@ jobs:
         run: |
           python scripts/build_windows.py
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${env:RELEASE_VERSION}" installer.iss
+          $installer = Get-ChildItem release -File -Filter '*.exe' | Select-Object -First 1
+          Move-Item -LiteralPath $installer.FullName -Destination "release/DianzhongMaterialAssistant-Setup-${env:RELEASE_VERSION}.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: release/素材投放助手-安装包-${{ inputs.version }}.exe
+          path: release/DianzhongMaterialAssistant-Setup-${{ inputs.version }}.exe
           if-no-files-found: error
 
   build-macos:
@@ -99,11 +101,11 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "release/素材投放助手.app" "release/素材投放助手-macos-${RELEASE_VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "release/素材投放助手.app" "release/DianzhongMaterialAssistant-macos-${RELEASE_VERSION}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: release/素材投放助手-macos-${{ inputs.version }}.zip
+          path: release/DianzhongMaterialAssistant-macos-${{ inputs.version }}.zip
           if-no-files-found: error
 
   publish:
