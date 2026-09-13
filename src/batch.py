@@ -5,7 +5,9 @@ import json
 import re
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime
+from multiprocessing import Manager
 from pathlib import Path
+from queue import Empty
 from urllib.parse import urlsplit
 
 from openpyxl import Workbook, load_workbook
@@ -39,17 +41,29 @@ def download_concurrency_for(config, operation):
     return max(1, min(requested, 3))
 
 
-def _download_worker(url, target_text, config, allow_redownload):
+def _download_worker(url, target_text, config, allow_redownload, event_queue=None,
+                     video_id="", task_index=0, task_total=0):
     """Run one download in its own process so Qt WebEngine is never shared."""
     import logging
     # Windows process spawning starts a fresh interpreter, so the parent
     # logger settings are not inherited.
     logging.getLogger("src.vendor.douyin").setLevel(logging.CRITICAL)
     logging.getLogger("src.vendor.failover").setLevel(logging.CRITICAL)
+
+    def emit(event):
+        if event_queue is not None:
+            event_queue.put({
+                **event,
+                "video_id": video_id,
+                "task_index": task_index,
+                "task_total": task_total,
+            })
+
     target = Path(target_text)
     try:
         if target.is_file():
             try:
+                emit({"type": "progress", "stage": "校验本地视频"})
                 metadata = media.validate_video(target)
                 return {"ok": True, "metadata": metadata}
             except (media.FFmpegError, ValueError):
@@ -57,7 +71,9 @@ def _download_worker(url, target_text, config, allow_redownload):
                     raise
                 import uuid
                 target.replace(target.with_name(f"{target.stem}.invalid-{uuid.uuid4().hex[:8]}{target.suffix}"))
-        metadata = Downloader(config).download(url, target)
+        downloader = Downloader(config)
+        downloader.on_event = emit
+        metadata = downloader.download(url, target)
         return {"ok": True, "metadata": metadata}
     except Exception as exc:  # Worker results must be serializable and safe for UI logs.
         return {"ok": False, "reason": error_summary(exc)}
@@ -267,7 +283,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
             futures = {}
             paused = False
 
-            def submit_available(executor):
+            def submit_available(executor, event_queue):
                 nonlocal paused
                 while len(futures) < download_concurrency and not paused:
                     if should_stop and should_stop():
@@ -277,25 +293,46 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                         video_id, url, target, task_index = next(job_iterator)
                     except StopIteration:
                         break
-                    future = executor.submit(_download_worker, url, target, config, True)
+                    future = executor.submit(
+                        _download_worker, url, target, config, True, event_queue,
+                        video_id, task_index, task_total,
+                    )
                     futures[future] = video_id
                     emit("progress", video_id=video_id, stage="并发下载中",
                          task_index=task_index, task_total=task_total,
                          running=len(futures), workers=download_concurrency)
 
-            with ProcessPoolExecutor(max_workers=download_concurrency) as executor:
-                submit_available(executor)
-                while futures:
-                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
-                    for future in completed:
-                        video_id = futures.pop(future)
+            with Manager() as manager:
+                event_queue = manager.Queue()
+
+                def forward_worker_events():
+                    while True:
                         try:
-                            result = future.result()
-                        except Exception as exc:
-                            result = {"ok": False, "reason": error_summary(exc)}
-                        if not result.get("ok"):
-                            parallel_failures[video_id] = result.get("reason", "下载失败")
-                    submit_available(executor)
+                            event = event_queue.get_nowait()
+                        except Empty:
+                            return
+                        kind = event.pop("type", "progress")
+                        emit(kind, **{
+                            **event,
+                            "workers": download_concurrency,
+                            "running": len(futures),
+                        })
+
+                with ProcessPoolExecutor(max_workers=download_concurrency) as executor:
+                    submit_available(executor, event_queue)
+                    while futures:
+                        completed, _ = wait(futures, timeout=.15, return_when=FIRST_COMPLETED)
+                        forward_worker_events()
+                        for future in completed:
+                            video_id = futures.pop(future)
+                            try:
+                                result = future.result()
+                            except Exception as exc:
+                                result = {"ok": False, "reason": error_summary(exc)}
+                            if not result.get("ok"):
+                                parallel_failures[video_id] = result.get("reason", "下载失败")
+                        submit_available(executor, event_queue)
+                    forward_worker_events()
 
     for row in rows:
         id_ = row["video_id"]
