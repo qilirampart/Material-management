@@ -558,7 +558,8 @@ class MainWindow(QMainWindow):
         return self.process is not None and self.process.state() != QProcess.NotRunning
 
     def active_background_tasks(self):
-        tasks = [self.io_task, self.quality_task, self.bitrate_task, self.settings.testing]
+        tasks = [self.io_task, self.quality_task, self.bitrate_task]
+        tasks.extend(self.settings.active_background_tasks())
         tasks.extend(self.platform.active_background_tasks())
         return [task for task in tasks if task is not None and task.isRunning()]
 
@@ -1205,4 +1206,6 @@ def main():
     configure_app(app)
     window = MainWindow()
     window.show()
+    if window.config.get('auto_check_update', True):
+        QTimer.singleShot(1800, lambda: window.settings.check_update(silent=True))
     return app.exec()

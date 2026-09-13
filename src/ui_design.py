@@ -1,14 +1,17 @@
 """Shared native desktop components and settings; no web UI server."""
 import json
+import sys
 import uuid
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFormLayout, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QCheckBox,
     QFileDialog, QMessageBox, QGridLayout, QDialog, QScrollArea)
 from src.paths import DATA_ROOT, RESOURCE_ROOT
+from src.update import APP_VERSION, REPOSITORY, check_for_update, download_update
 from src.vision import PHRASES, image_part
 
 STYLE = """
@@ -96,6 +99,10 @@ class SettingsPage(QWidget):
         super().__init__()
         self.config = dict(config)
         self.testing = None
+        self.update_check_task = None
+        self.update_download_task = None
+        self.update_info = None
+        self.downloaded_update = None
         self.entries = []
         self.active = -1
         outer = QVBoxLayout(self)
@@ -131,15 +138,26 @@ class SettingsPage(QWidget):
         box.addWidget(label('密钥仅保存在本机；检测模型支持 OpenAI 兼容接口。'))
 
         updates, box = card('软件更新')
-        box.addWidget(label('当前版本  v0.2.2', 'section'))
-        box.addWidget(label('GitHub 更新源尚未配置'))
-        box.addWidget(label('发布更新源后，可在软件内检查、下载并重启更新。'))
-        box.addWidget(btn('检查更新', lambda: self.set_message('更新服务待接入：尚未发布本项目的 GitHub 更新源，当前无法查询新版本。')))
-        self.auto_update = QCheckBox('启动时自动检查更新（发布后启用）')
+        box.addWidget(label(f'当前版本  v{APP_VERSION}', 'section'))
+        box.addWidget(label(f'GitHub 更新源：{REPOSITORY}'))
+        box.addWidget(label('检查更新不会影响当前任务；下载完成后由你确认是否安装。'))
+        self.update_state = label('尚未检查更新。')
+        box.addWidget(self.update_state)
+        update_actions = QHBoxLayout()
+        self.check_update_button = btn('检查更新', self.check_update, True)
+        self.download_update_button = btn('下载更新', self.download_update)
+        self.download_update_button.setEnabled(False)
+        self.install_update_button = btn('安装已下载更新', self.install_downloaded_update)
+        self.install_update_button.setEnabled(False)
+        update_actions.addWidget(self.check_update_button)
+        update_actions.addWidget(self.download_update_button)
+        update_actions.addWidget(self.install_update_button)
+        box.addLayout(update_actions)
+        self.auto_update = QCheckBox('启动时自动检查更新')
         self.auto_update.setChecked(config.get('auto_check_update', True))
         box.addWidget(self.auto_update)
         box.addWidget(label('更新设计：保留模型配置、历史任务和浏览器数据。'))
-        box.addWidget(label('任务运行时不自动重启。在线更新尚未接入。'))
+        box.addWidget(label('任务运行时不会自动安装或重启；请先完成当前下载与检测。'))
         box.addStretch()
 
         rules, box = card('检测规则')
@@ -291,9 +309,120 @@ class SettingsPage(QWidget):
             edit.setText(path)
 
     def open_logs(self):
-        from PySide6.QtGui import QDesktopServices
-        from PySide6.QtCore import QUrl
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(DATA_ROOT / 'runtime')))
+
+    @staticmethod
+    def _file_size(size):
+        size = int(size or 0)
+        if size < 1024 * 1024:
+            return f'{size / 1024:.1f} KB'
+        return f'{size / 1024 / 1024:.1f} MB'
+
+    def check_update(self, silent=False):
+        if self.update_check_task and self.update_check_task.isRunning():
+            return
+        self.check_update_button.setEnabled(False)
+        if not silent:
+            self.update_state.setText('正在连接 GitHub 查询最新版本…')
+
+        def finished(info):
+            self.update_info = info
+            asset = info.get('asset')
+            if not info.get('update_available'):
+                self.update_state.setText(f"已是最新版本 v{info['current_version']}。")
+                self.download_update_button.setEnabled(False)
+                return
+            if asset:
+                self.update_state.setText(
+                    f"发现 v{info['latest_version']}：{asset['name']}（{self._file_size(asset['size'])}）。"
+                )
+                self.download_update_button.setEnabled(True)
+            else:
+                self.update_state.setText(
+                    f"发现 v{info['latest_version']}，但当前系统没有可下载的安装包；请到 Release 页面下载。"
+                )
+                self.download_update_button.setEnabled(False)
+                QDesktopServices.openUrl(QUrl(info['release_url']))
+
+        def failed(message):
+            self.update_state.setText(message)
+            if not silent:
+                self.set_message(message)
+
+        self.update_check_task = Background(check_for_update, self)
+        self.update_check_task.result.connect(finished)
+        self.update_check_task.failed.connect(failed)
+        self.update_check_task.finished.connect(lambda: self.check_update_button.setEnabled(True))
+        self.update_check_task.start()
+
+    def download_update(self):
+        asset = (self.update_info or {}).get('asset')
+        if not asset or (self.update_download_task and self.update_download_task.isRunning()):
+            return
+        self.download_update_button.setEnabled(False)
+        self.update_state.setText(f"正在下载 {asset['name']}…")
+
+        def task():
+            return download_update(
+                asset,
+                DATA_ROOT / 'runtime' / 'updates',
+                progress=lambda data: self.update_download_task.progress.emit(data),
+            )
+
+        def progress(data):
+            total = data.get('total') or 0
+            downloaded = data.get('downloaded') or 0
+            percent = f' {downloaded * 100 / total:.0f}%' if total else ''
+            speed = self._file_size(data.get('bytes_per_second', 0)) + '/s'
+            self.update_state.setText(f"正在下载更新{percent}：{self._file_size(downloaded)}，{speed}。")
+
+        def finished(path):
+            self.downloaded_update = Path(path)
+            self.update_state.setText(f'更新包已下载：{self.downloaded_update.name}。可立即安装，或稍后在更新目录运行。')
+            self.install_update_button.setEnabled(True)
+            self.set_message(f'更新包已保存到：{self.downloaded_update}')
+
+        def failed(message):
+            self.update_state.setText(message)
+            self.set_message(message)
+
+        self.update_download_task = Background(task, self)
+        self.update_download_task.progress.connect(progress)
+        self.update_download_task.result.connect(finished)
+        self.update_download_task.failed.connect(failed)
+        self.update_download_task.finished.connect(lambda: self.download_update_button.setEnabled(bool((self.update_info or {}).get('asset'))))
+        self.update_download_task.start()
+
+    def install_downloaded_update(self):
+        path = self.downloaded_update
+        if not path or not path.is_file():
+            self.install_update_button.setEnabled(False)
+            self.update_state.setText('找不到已下载的更新包，请重新下载。')
+            return
+        if sys.platform.startswith('win') and path.suffix.lower() == '.exe':
+            answer = QMessageBox.question(
+                self,
+                '安装更新',
+                '安装程序将启动，并关闭当前软件以完成更新。是否继续？',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            if QProcess.startDetached(str(path), []):
+                self.update_state.setText('安装程序已启动，软件将在片刻后退出。')
+                QTimer.singleShot(600, lambda: self.window().close())
+            else:
+                self.update_state.setText('无法启动安装程序，请在更新目录手动运行。')
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        self.update_state.setText('已打开更新包，请按系统提示完成安装。')
+
+    def active_background_tasks(self):
+        return [
+            task for task in (self.testing, self.update_check_task, self.update_download_task)
+            if task is not None and task.isRunning()
+        ]
 
     def test_model(self):
         self.capture()
