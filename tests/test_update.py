@@ -21,6 +21,19 @@ class FakeResponse:
         return iter(self.chunks)
 
 
+class HttpErrorResponse(FakeResponse):
+    def __init__(self, status_code, url):
+        super().__init__()
+        self.status_code = status_code
+        self.url = url
+
+    def raise_for_status(self):
+        import requests
+        error = requests.HTTPError('failed')
+        error.response = self
+        raise error
+
+
 class UpdateTests(unittest.TestCase):
     def test_version_key_accepts_v_prefix(self):
         self.assertEqual(version_key("v0.3.7"), (0, 3, 7))
@@ -52,3 +65,24 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"abc")
             self.assertFalse(target.with_suffix(".exe.part").exists())
         self.assertEqual(updates[-1]["downloaded"], 3)
+
+    def test_rate_limited_api_falls_back_to_public_release_redirect(self):
+        calls = []
+
+        def request_get(url, **kwargs):
+            calls.append(url)
+            if 'api.github.com' in url:
+                return HttpErrorResponse(403, url)
+            return FakeResponse()
+
+        release_page = FakeResponse()
+        release_page.url = 'https://github.com/qilirampart/Material-management/releases/tag/v0.3.8'
+
+        def redirecting_get(url, **kwargs):
+            if 'api.github.com' in url:
+                return HttpErrorResponse(403, url)
+            return release_page
+
+        found = check_for_update(current_version='0.3.7', system='Windows', request_get=redirecting_get)
+        self.assertTrue(found['update_available'])
+        self.assertIn('DianzhongMaterialAssistant-Setup-0.3.8.exe', found['asset']['url'])

@@ -14,6 +14,7 @@ import requests
 APP_VERSION = "0.3.7"
 REPOSITORY = "qilirampart/Material-management"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+LATEST_RELEASE_PAGE_URL = f"https://github.com/{REPOSITORY}/releases/latest"
 _VERSION_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$")
 
 
@@ -47,6 +48,48 @@ def _safe_download_url(value: str) -> str:
     return value
 
 
+def _redirect_release_fallback(*, current_version: str, system: str | None, request_get) -> dict:
+    """Use GitHub's public latest-release redirect when API quota is exhausted."""
+    try:
+        response = request_get(
+            LATEST_RELEASE_PAGE_URL,
+            headers={"User-Agent": "DianzhongMaterialAssistant"},
+            timeout=(5, 20),
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        parsed = urlparse(str(response.url))
+    except requests.RequestException as exc:
+        raise UpdateError("GitHub 更新服务暂时不可用，请稍后重试。") from exc
+    expected_prefix = f"/{REPOSITORY}/releases/tag/"
+    if parsed.scheme != "https" or parsed.hostname != "github.com" or not parsed.path.startswith(expected_prefix):
+        raise UpdateError("无法识别 GitHub 最新发布版本，请稍后重试。")
+    latest_version = parsed.path[len(expected_prefix):].lstrip("v")
+    latest_key = version_key(latest_version)
+    system = (system or platform.system()).lower()
+    if system == "windows":
+        name = f"DianzhongMaterialAssistant-Setup-{latest_version}.exe"
+    elif system == "darwin":
+        name = f"DianzhongMaterialAssistant-macos-{latest_version}.zip"
+    else:
+        name = ""
+    asset = None
+    if name:
+        asset = {
+            "name": name,
+            "url": _safe_download_url(f"https://github.com/{REPOSITORY}/releases/download/v{latest_version}/{name}"),
+            "size": 0,
+        }
+    return {
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": latest_key > version_key(current_version),
+        "release_url": _safe_download_url(f"https://github.com{parsed.path}"),
+        "asset": asset,
+        "notes": "通过 GitHub Release 页面查询（API 配额已满）。",
+    }
+
+
 def check_for_update(*, current_version: str = APP_VERSION, system: str | None = None, request_get=requests.get) -> dict:
     """Return update metadata from the repository's latest public release."""
     try:
@@ -57,6 +100,14 @@ def check_for_update(*, current_version: str = APP_VERSION, system: str | None =
         )
         response.raise_for_status()
         payload = response.json()
+    except requests.HTTPError as exc:
+        if getattr(exc.response, "status_code", None) == 403:
+            return _redirect_release_fallback(
+                current_version=current_version,
+                system=system,
+                request_get=request_get,
+            )
+        raise UpdateError("GitHub 更新服务暂时不可用，请稍后重试。") from exc
     except requests.RequestException as exc:
         raise UpdateError("无法连接 GitHub 更新服务，请检查网络后重试。") from exc
     except (TypeError, ValueError) as exc:
