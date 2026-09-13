@@ -4,9 +4,17 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from src.batch import read_input
+from src.task_input import parse_upload_drama_filename
 
 
 class InputTests(unittest.TestCase):
+    def test_filename_drama_info_extracts_platform_id_and_name(self):
+        self.assertEqual(
+            parse_upload_drama_filename("41000329324-垃圾桶里捡到爹.xlsx"),
+            {"drama_platform_id": "41000329324", "drama_name": "垃圾桶里捡到爹"},
+        )
+        self.assertEqual(parse_upload_drama_filename("普通需求表.xlsx"), {})
+
     def test_real_input_with_incorrect_dimensions(self):
         path = Path(__file__).resolve().parents[1] / "懂小剧素材_婚房门后的秘密.xlsx"
         self.assertEqual(len(read_input(path)), 200)

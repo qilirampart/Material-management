@@ -52,6 +52,30 @@ class PlatformUploadUiTests(unittest.TestCase):
             self.assertFalse(page.batch_selector.isHidden())
             page.deleteLater()
 
+    def test_filename_drama_info_prefills_platform_id_before_history_or_manual_input(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video = root / "download.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({
+                "platform_url": "https://market.wuread.cn/market-admin/",
+                "upload_preferences_path": str(root / "upload-preferences.json"),
+            })
+            rows = [{
+                "video_id": "1", "input_error": "", "source": {},
+                "upload_drama_info": {
+                    "drama_platform_id": "41000329324",
+                    "drama_name": "垃圾桶里捡到爹",
+                },
+            }]
+            records = {"1": {"status": "sample_clear", "download": "已下载", "video_path": str(video)}}
+
+            page.set_materials(rows, records, {}, {"1"}, root)
+
+            self.assertEqual(page.drama_name.text(), "垃圾桶里捡到爹")
+            self.assertEqual(page.drama_id.currentText(), "41000329324")
+            page.deleteLater()
+
     def test_reentering_same_batch_keeps_upload_preparation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

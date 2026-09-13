@@ -13,6 +13,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from src import media, vision
 from src.download_support import Downloader
+from src.task_input import parse_upload_drama_filename
 
 HEADERS = ["剧名", "视频ID", "热度", "点赞数", "创建时间", "原始链接"]
 LABELS = {"pending": "待处理", "download_failed": "下载失败", "review_required": "待复核",
@@ -73,6 +74,7 @@ def read_input(path):
         return rows
     workbook = load_workbook(path, data_only=True, read_only=True)
     rows = []
+    upload_drama_info = parse_upload_drama_filename(path)
     try:
         for sheet in workbook:
             sheet.reset_dimensions()
@@ -97,6 +99,9 @@ def read_input(path):
                     error = "原始链接必须是与视频ID一致的抖音视频HTTPS链接"
                 rows.append({"sheet": sheet.title, "row": row_number, "source": row,
                              "video_id": id_, "url": url, "input_error": error})
+        if upload_drama_info:
+            for row in rows:
+                row["upload_drama_info"] = dict(upload_drama_info)
     finally:
         workbook.close()
     return rows

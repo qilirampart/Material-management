@@ -80,6 +80,22 @@ def suggested_drama_name(materials):
     return names.pop() if len(names) == 1 else ""
 
 
+def suggested_upload_drama_info(materials):
+    """Return filename-derived upload details when every selected item agrees."""
+    values = [
+        (str(item.get("upload_drama_info", {}).get("drama_platform_id", "")).strip(),
+         str(item.get("upload_drama_info", {}).get("drama_name", "")).strip())
+        for item in materials
+        if isinstance(item.get("upload_drama_info"), dict)
+        and str(item["upload_drama_info"].get("drama_platform_id", "")).strip()
+        and str(item["upload_drama_info"].get("drama_name", "")).strip()
+    ]
+    if len(values) != len(materials) or len(set(values)) != 1:
+        return {}
+    drama_platform_id, drama_name = values[0]
+    return {"drama_platform_id": drama_platform_id, "drama_name": drama_name}
+
+
 def safe_filename_part(value):
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(value).strip())
     cleaned = re.sub(r"\s+", " ", cleaned).rstrip(". ")

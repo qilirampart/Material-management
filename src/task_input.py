@@ -4,6 +4,21 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+
+def parse_upload_drama_filename(path):
+    """Extract the platform drama ID and name from ``ID-剧名.xlsx``."""
+    stem = Path(path).stem.strip()
+    matched = re.fullmatch(r"(?P<id>\d{1,25})\s*[-－]\s*(?P<name>.+?)\s*", stem)
+    if not matched:
+        return {}
+    name = matched.group("name").strip()
+    if not name:
+        return {}
+    return {
+        "drama_platform_id": matched.group("id"),
+        "drama_name": name,
+    }
+
 HEADERS = ['剧名', '视频ID', '热度', '点赞数', '创建时间', '原始链接']
 
 

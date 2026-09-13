@@ -48,6 +48,7 @@ from src.upload import (
     remember_upload_preferences,
     stage_upload_batch,
     suggested_drama_name,
+    suggested_upload_drama_info,
     upload_preference_entries,
 )
 from src.vision import PHRASES, load_profile
@@ -420,7 +421,7 @@ class UploadConfigDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
         layout.addWidget(label('上传信息', 'section'))
-        layout.addWidget(label('剧名由需求表预填；同一剧名可保留多个平台短剧 ID。'))
+        layout.addWidget(label('优先使用导入文件名中的短剧 ID 和剧名；用户可手动修改或读取平台当前选择。'))
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(12)
@@ -771,7 +772,8 @@ class PlatformPage(QWidget):
             drama = str(material.get('source', {}).get('剧名', '')).strip() or '未命名素材'
             self.material_list.addItem(f"{drama} · {material['video_id']}")
         self.material_summary.setText(f'{len(self.materials)} 条可上传 · 仅包含当前勾选且检测通过的素材')
-        proposed = suggested_drama_name(self.materials)
+        filename_info = suggested_upload_drama_info(self.materials)
+        proposed = filename_info.get('drama_name') or suggested_drama_name(self.materials)
         self.refresh_upload_history()
         if proposed:
             self.drama_name.setText(proposed)
@@ -779,9 +781,16 @@ class PlatformPage(QWidget):
             self.drama_id.blockSignals(True)
             self.drama_id.clear()
             self.drama_id.addItems(remembered.get('ids', {}).keys())
-            self.drama_id.setCurrentIndex(-1)
+            filename_id = filename_info.get('drama_platform_id', '')
+            if filename_id:
+                if self.drama_id.findText(filename_id) < 0:
+                    self.drama_id.addItem(filename_id)
+                self.drama_id.setEditText(filename_id)
+                self.director.setText(remembered.get('ids', {}).get(filename_id, {}).get('director', ''))
+            else:
+                self.drama_id.setCurrentIndex(-1)
+                self.director.clear()
             self.drama_id.blockSignals(False)
-            self.director.clear()
         else:
             self.drama_name.clear()
             self.drama_id.clear()
