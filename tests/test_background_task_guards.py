@@ -91,7 +91,19 @@ class BackgroundTaskGuardTests(unittest.TestCase):
         self.window.pause_active_task()
 
         self.assertTrue(self.window.bitrate_stop_event.is_set())
-        self.assertIn("当前视频完成后暂停", self.window.statusBar().currentMessage())
+        self.assertIn("正在停止当前转码", self.window.statusBar().currentMessage())
+
+    def test_close_requests_cancellable_bitrate_task_to_stop(self):
+        self.window.bitrate_task = RunningTask()
+        self.window.bitrate_task.supports_immediate_stop = True
+        self.window.bitrate_stop_event.clear()
+        event = QCloseEvent()
+
+        self.window.closeEvent(event)
+
+        self.assertFalse(event.isAccepted())
+        self.assertTrue(self.window.close_after)
+        self.assertTrue(self.window.bitrate_stop_event.is_set())
 
 
 if __name__ == "__main__":

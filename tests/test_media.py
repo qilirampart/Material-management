@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.media import (
+    FFmpegCancelled,
     FFmpegError,
     describe_bitrate,
     describe_video,
@@ -17,6 +18,34 @@ from src.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch("src.media.subprocess.Popen")
+    def test_cancellable_run_terminates_active_ffmpeg_immediately(self, popen):
+        class Process:
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                raise AssertionError("graceful terminate should be enough")
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        process = Process()
+        popen.return_value = process
+
+        with self.assertRaises(FFmpegCancelled):
+            run(["ffmpeg", "-version"], should_stop=lambda: True)
+
+        self.assertTrue(process.terminated)
+
     def test_prefers_nvidia_then_intel_then_amd_hardware_h264_encoder(self):
         output = "\n".join([
             " V....D h264_amf            AMD AMF H.264 Encoder",

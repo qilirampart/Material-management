@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from src.media import (
+    FFmpegCancelled,
     MINIMUM_VIDEO_BITRATE_KBPS,
     effective_video_bitrate_bps,
     transcode_for_upload_bitrate,
@@ -260,14 +261,20 @@ def enhance_selected_bitrates(
             continue
         target = output_folder / f"{safe_filename_part(video_id)}.mp4"
         try:
+            stop_argument = {"should_stop": should_stop} if should_stop else {}
             if item_phase:
                 metadata = transcode_for_upload_bitrate(
                     source,
                     target,
                     progress=lambda phase: item_phase(video_id, phase),
+                    **stop_argument,
                 )
             else:
-                metadata = transcode_for_upload_bitrate(source, target)
+                metadata = transcode_for_upload_bitrate(source, target, **stop_argument)
+        except FFmpegCancelled:
+            # The caller treats this as a clean pause; do not report a failed
+            # material or start another transcode.
+            break
         except Exception as exc:
             if item_failed:
                 item_failed(video_id, exc)

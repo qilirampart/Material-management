@@ -207,7 +207,7 @@ class UploadPreparationTests(unittest.TestCase):
                     "metadata": {"video_bitrate_bps": 1_200_000},
                 }
 
-            def convert(_source, output):
+            def convert(_source, output, **_unused):
                 if Path(output).stem == "2":
                     raise RuntimeError("broken input")
                 Path(output).write_bytes(b"enhanced-video")
@@ -243,7 +243,7 @@ class UploadPreparationTests(unittest.TestCase):
                 }
             stop = {"requested": False}
 
-            def convert(_source, output):
+            def convert(_source, output, **_unused):
                 Path(output).write_bytes(b"enhanced-video")
                 stop["requested"] = True
                 return {"video_bitrate_bps": 4_200_000}

@@ -877,6 +877,7 @@ class MainWindow(QMainWindow):
             )
 
         task = Background(enhance, self)
+        task.supports_immediate_stop = True
         self.bitrate_task = task
         self.bitrate_task.progress.connect(self.show_bitrate_progress)
         self.bitrate_task.result.connect(self.apply_enhanced_bitrates)
@@ -914,7 +915,7 @@ class MainWindow(QMainWindow):
         self.download_bar.setValue(max(0, index - 1))
         self.download_bar.setFormat(f'第 {index} / {total} 个')
         self.work_detail.setText(
-            f"正在处理 {event.get('video_id', '')}\n当前文件完成后可暂停"
+            f"正在处理 {event.get('video_id', '')}\n可立即暂停当前转码"
         )
 
     def apply_enhanced_bitrates(self, result):
@@ -944,6 +945,8 @@ class MainWindow(QMainWindow):
         self.download_bar.setValue(1000)
         self.download_bar.setFormat('码率处理结束')
         self.set_busy(False)
+        if self.close_after:
+            QTimer.singleShot(0, self.close)
 
     def show_review_id(self, id_):
         row = next((r for r in self.rows if r['video_id'] == id_), None)
@@ -1088,7 +1091,7 @@ class MainWindow(QMainWindow):
         if self.bitrate_task and self.bitrate_task.isRunning():
             self.bitrate_stop_event.set()
             self.pause_button.setEnabled(False)
-            self.statusBar().showMessage('已请求暂停，当前视频完成后暂停')
+            self.statusBar().showMessage('已请求暂停，正在停止当前转码')
             return
         if self.is_running():
             self.pause()
@@ -1217,7 +1220,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.has_active_background_tasks():
-            self.statusBar().showMessage('后台任务仍在运行，请等待完成后关闭。')
+            if (
+                self.bitrate_task and self.bitrate_task.isRunning()
+                and getattr(self.bitrate_task, 'supports_immediate_stop', False)
+            ):
+                self.close_after = True
+                self.bitrate_stop_event.set()
+                self.pause_button.setEnabled(False)
+                self.statusBar().showMessage('正在停止码率提升；当前转码已中断后会自动退出。')
+            else:
+                self.statusBar().showMessage('后台任务仍在运行，请等待完成后关闭。')
             event.ignore()
             return
         if self.is_running():

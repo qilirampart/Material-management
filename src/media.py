@@ -12,6 +12,10 @@ class FFmpegError(RuntimeError):
     pass
 
 
+class FFmpegCancelled(FFmpegError):
+    """Raised when an active FFmpeg operation is stopped by the user."""
+
+
 MINIMUM_VIDEO_BITRATE_KBPS = 3500
 TARGET_UPLOAD_BITRATE_KBPS = 4200
 
@@ -75,12 +79,60 @@ def effective_video_bitrate_bps(metadata):
     return int(_number(metadata.get("video_bitrate_bps")) or _number(metadata.get("total_bitrate_bps")))
 
 
-def run(command, timeout=180):
-    result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
-                            timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-    if result.returncode:
-        raise FFmpegError(result.stderr[-1000:])
-    return result.stdout
+def run(command, timeout=180, should_stop=None):
+    """Run FFmpeg, polling the optional stop callback while it is active.
+
+    `subprocess.run` cannot observe a pause request until FFmpeg exits.  Using a
+    short communicate timeout keeps long transcodes cancellable without putting
+    any work on the Qt event loop.
+    """
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    if should_stop is None:
+        result = subprocess.run(
+            command, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=timeout, creationflags=flags,
+        )
+        if result.returncode:
+            raise FFmpegError(result.stderr[-1000:])
+        return result.stdout
+
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        encoding="utf-8", errors="replace", creationflags=flags,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if should_stop():
+                process.terminate()
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise FFmpegCancelled("已停止当前 FFmpeg 任务")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                process.communicate()
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.15, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if process.returncode:
+            raise FFmpegError((stderr or "")[-1000:])
+        return stdout or ""
+    except FFmpegCancelled:
+        # The cancellation path above has already waited for the child process
+        # to exit (or killed it after the grace period).
+        raise
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        raise
 
 
 def preferred_hardware_h264_encoder(encoders_output: str) -> str | None:
@@ -134,10 +186,14 @@ def ensure_video_has_decodable_frame(path):
     run(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-frames:v", "1", "-f", "null", "-"])
 
 
-def validate_video(path):
+def validate_video(path, should_stop=None):
     metadata = probe(path)
     # Decode all streams once before treating a completed download as reusable.
-    run(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"], timeout=600)
+    run(
+        ["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"],
+        timeout=600,
+        should_stop=should_stop,
+    )
     return metadata
 
 
@@ -148,9 +204,12 @@ def transcode_for_upload_bitrate(
     target_kbps=TARGET_UPLOAD_BITRATE_KBPS,
     minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS,
     progress=None,
+    should_stop=None,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
+    if should_stop and should_stop():
+        raise FFmpegCancelled("已停止码率提升")
     source_metadata = probe(source_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
@@ -187,19 +246,30 @@ def transcode_for_upload_bitrate(
             progress('encoding')
         encoding_started_at = time.monotonic()
         try:
-            run(command_for(encoder), timeout=timeout)
-        except FFmpegError:
+            run(
+                command_for(encoder), timeout=timeout,
+                **({"should_stop": should_stop} if should_stop else {}),
+            )
+        except FFmpegError as exc:
+            if isinstance(exc, FFmpegCancelled):
+                raise
             if not hardware_accelerated:
                 raise
             output_path.unlink(missing_ok=True)
             encoder = "libx264"
             hardware_accelerated = False
-            run(command_for(encoder), timeout=timeout)
+            run(
+                command_for(encoder), timeout=timeout,
+                **({"should_stop": should_stop} if should_stop else {}),
+            )
         encoding_seconds = time.monotonic() - encoding_started_at
         if progress:
             progress('validating')
         validating_started_at = time.monotonic()
-        metadata = dict(validate_video(output_path))
+        metadata = dict(validate_video(
+            output_path,
+            **({"should_stop": should_stop} if should_stop else {}),
+        ))
         metadata["transcode"] = {
             "video_encoder": encoder,
             "hardware_accelerated": hardware_accelerated,
