@@ -30,6 +30,7 @@ command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--wi
            "--name", "素材投放助手", "--distpath", str(ROOT / "release"), "--workpath", str(ROOT / "build"),
            "--specpath", str(ROOT / "build"), "--add-data", str(ROOT / "config.example.json") + ";.",
            "--add-data", str(ROOT / "assets/references") + ";assets/references",
+           "--icon", str(ROOT / "assets/icons/app-icon.ico"),
            "--hidden-import", "src.vendor.browser_probe", "--hidden-import", "PySide6.QtWebEngineWidgets"]
 for name in ["ffmpeg", "ffprobe"]:
     binary = _find_real_binary(name)

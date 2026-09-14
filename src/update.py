@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.4.0"
 REPOSITORY = "qilirampart/Material-management"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 LATEST_RELEASE_PAGE_URL = f"https://github.com/{REPOSITORY}/releases/latest"

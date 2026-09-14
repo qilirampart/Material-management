@@ -1,25 +1,19 @@
-"""Build the lightweight online installer on its target operating system."""
+"""Build the lightweight Windows online installer with Inno Setup."""
 from __future__ import annotations
 
 import argparse
-import shutil
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "DianzhongMaterialAssistant-OnlineInstaller"
-
 parser = argparse.ArgumentParser()
-parser.add_argument("--distpath", default=str(ROOT / "release"))
+parser.add_argument("--version", required=True)
 args = parser.parse_args()
-distpath = Path(args.distpath).resolve()
-workpath = ROOT / "build" / "online-installer"
-specpath = ROOT / "build" / "online-installer-spec"
-shutil.rmtree(workpath, ignore_errors=True)
-shutil.rmtree(specpath, ignore_errors=True)
-subprocess.run([
-    sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
-    "--name", NAME, "--distpath", str(distpath), "--workpath", str(workpath),
-    "--specpath", str(specpath), str(ROOT / "src" / "online_installer.py"),
-], cwd=ROOT, check=True)
+if sys.platform != "win32":
+    raise SystemExit("The Windows online installer must be built on Windows.")
+compiler = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Inno Setup 6" / "ISCC.exe"
+if not compiler.is_file():
+    raise SystemExit("Inno Setup 6 is required.")
+subprocess.run([str(compiler), f"/DAppVersion={args.version}", "online_installer.iss"], cwd=ROOT, check=True)
