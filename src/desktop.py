@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
         self.config.setdefault("output_root", str(APP_DATA_ROOT / "output"))
         self.rows, self.records, self.notes = [], {}, {}
         self.checked = set()
+        self.last_removed = None
         self.io_task = None
         self.quality_task = None
         self.bitrate_task = None
@@ -237,11 +238,14 @@ class MainWindow(QMainWindow):
         self.invert_button = button('反选', self.invert_visible_selection)
         self.clear_selection_button = button('清除选择', self.clear_selection)
         self.remove_selection_button = button('移除选中', self.remove_checked_rows)
+        self.undo_remove_button = button('撤回移除', self.undo_last_removal)
+        self.undo_remove_button.setEnabled(False)
         for control in (
             self.select_all_button,
             self.invert_button,
             self.clear_selection_button,
             self.remove_selection_button,
+            self.undo_remove_button,
         ):
             selection_toolbar.addWidget(control)
         selection_toolbar.addWidget(label('前 N 条'))
@@ -360,6 +364,8 @@ class MainWindow(QMainWindow):
             return
         self.rows, self.records, self.notes = [], {}, {}
         self.checked.clear()
+        self.last_removed = None
+        self.undo_remove_button.setEnabled(False)
         self.folder = self.input_path = None
         self.batch_name.setText('新批次 · 添加素材后勾选处理')
         self.refresh_table()
@@ -457,15 +463,40 @@ class MainWindow(QMainWindow):
         if self.is_running() or not self.checked:
             return
         removed = {row['video_id'] for row in self.rows if row['video_id'] in self.checked}
+        self.last_removed = {
+            'items': [
+                (index, row, copy.deepcopy(self.records.get(row['video_id'])), copy.deepcopy(self.notes.get(row['video_id'])))
+                for index, row in enumerate(self.rows) if row['video_id'] in removed
+            ],
+            'checked': set(self.checked),
+        }
         self.rows = [row for row in self.rows if row['video_id'] not in removed]
         self.checked.clear()
         self.persist_candidate_rows()
         self.refresh_table()
+        self.undo_remove_button.setEnabled(True)
         if self.folder:
             self.batch_name.setText(
                 f'当前批次：{self.folder.name} · {len(self.rows)} 条素材 · 导入不自动执行'
             )
         self.statusBar().showMessage(f'已从候选区移除 {len(removed)} 条素材，本地视频文件未删除。')
+
+    def undo_last_removal(self):
+        if self.is_running() or not self.last_removed:
+            return
+        for index, row, record, note in sorted(self.last_removed['items'], key=lambda item: item[0]):
+            self.rows.insert(min(index, len(self.rows)), row)
+            if record is not None:
+                self.records[row['video_id']] = record
+            if note is not None:
+                self.notes[row['video_id']] = note
+        self.checked = set(self.last_removed['checked'])
+        restored = len(self.last_removed['items'])
+        self.last_removed = None
+        self.undo_remove_button.setEnabled(False)
+        self.persist_candidate_rows()
+        self.refresh_table()
+        self.statusBar().showMessage(f'已撤回移除，恢复 {restored} 条素材及其处理结果。')
 
     def persist_candidate_rows(self):
         if not self.folder or not self.input_path:
@@ -571,6 +602,7 @@ class MainWindow(QMainWindow):
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
             self.mode, self.download_concurrency, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
+            self.undo_remove_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
         ]:
             control.setEnabled(not busy)
@@ -728,6 +760,8 @@ class MainWindow(QMainWindow):
             if not isinstance(state.get("input_rows"), list) or not isinstance(state.get("records"), dict):
                 raise ValueError("不是有效的素材批次文件。")
             self.checked.clear()
+            self.last_removed = None
+            self.undo_remove_button.setEnabled(False)
             self.folder = folder.resolve()
             self.rows, self.records = state["input_rows"], state["records"]
             stored = state.get("input_path")

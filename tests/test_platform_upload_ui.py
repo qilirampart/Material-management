@@ -182,6 +182,27 @@ class PlatformUploadUiTests(unittest.TestCase):
         self.assertEqual(page.internal_browser_button.text(), "打开平台")
         page.deleteLater()
 
+    def test_downloaded_material_without_a_model_review_can_be_uploaded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video = root / "download.mp4"
+            video.write_bytes(b"video")
+            page = PlatformPage({"platform_url": "https://market.wuread.cn/market-admin/"})
+            rows = [{"video_id": "1", "input_error": "", "source": {"剧名": "测试"}}]
+            records = {"1": {
+                "status": "review_required",
+                "download": "已下载",
+                "reason": "\u4ec5\u4e0b\u8f7d\uff0c\u672a\u8c03\u7528\u6a21\u578b",
+                "video_path": str(video),
+            }}
+
+            page.set_materials(rows, records, {}, {"1"}, root)
+
+            self.assertEqual(len(page.materials), 1)
+            self.assertIn("未检测", page.material_summary.text())
+            self.assertTrue(page.prepare_button.isEnabled())
+            page.deleteLater()
+
     def test_development_edge_entry_is_opt_in(self):
         page = PlatformPage({
             "platform_url": "https://market.wuread.cn/market-admin/",

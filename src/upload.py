@@ -59,11 +59,15 @@ def eligible_materials(rows, records, notes, selected_ids, *, require_files=True
         video_id = row.get("video_id", "")
         record = records.get(video_id, {})
         path = Path(record.get("video_path", ""))
+        unreviewed_download = (
+            record.get("status") == "review_required"
+            and record.get("reason") == "\u4ec5\u4e0b\u8f7d\uff0c\u672a\u8c03\u7528\u6a21\u578b"
+        )
         if (
             video_id in selected
             and not row.get("input_error")
             and record.get("download") == "已下载"
-            and record.get("status") == "sample_clear"
+            and (record.get("status") == "sample_clear" or unreviewed_download)
             and not notes.get(video_id, {}).get("blocked")
             and (not require_files or path.is_file())
         ):

@@ -292,6 +292,18 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertEqual([row["video_id"] for row in self.window.rows], [second["video_id"]])
         self.assertEqual(self.window.checked, set())
 
+    def test_removed_materials_can_be_restored_with_their_selection(self):
+        original = self.window.rows[0]["video_id"]
+        self.window.remove_checked_rows()
+        self.assertTrue(self.window.undo_remove_button.isEnabled())
+        self.assertEqual(self.window.rows, [])
+
+        self.window.undo_last_removal()
+
+        self.assertEqual([row["video_id"] for row in self.window.rows], [original])
+        self.assertEqual(self.window.checked, {original})
+        self.assertFalse(self.window.undo_remove_button.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()

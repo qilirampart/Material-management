@@ -771,7 +771,12 @@ class PlatformPage(QWidget):
         for material in self.materials:
             drama = str(material.get('source', {}).get('剧名', '')).strip() or '未命名素材'
             self.material_list.addItem(f"{drama} · {material['video_id']}")
-        self.material_summary.setText(f'{len(self.materials)} 条可上传 · 仅包含当前勾选且检测通过的素材')
+        unreviewed = sum(
+            material.get('record', {}).get('status') == 'review_required'
+            for material in self.materials
+        )
+        suffix = f' · 含 {unreviewed} 条未检测素材' if unreviewed else ''
+        self.material_summary.setText(f'{len(self.materials)} 条可上传 · 当前勾选的可用素材{suffix}')
         filename_info = suggested_upload_drama_info(self.materials)
         proposed = filename_info.get('drama_name') or suggested_drama_name(self.materials)
         self.refresh_upload_history()
