@@ -216,6 +216,9 @@ class MainWindow(QMainWindow):
         inputs.addWidget(self.link_button)
         self.local_button = button('添加本地视频', self.add_local)
         inputs.addWidget(self.local_button)
+        self.open_download_button = button('打开下载目录', self.open_download_folder)
+        self.open_download_button.setToolTip('打开当前批次的视频下载目录；尚未创建批次时打开默认素材保存目录。')
+        inputs.addWidget(self.open_download_button)
         box.addLayout(inputs)
         self.batch_name = label('尚未添加素材 · 导入仅加入候选区，不自动执行')
         box.addWidget(self.batch_name)
@@ -538,6 +541,11 @@ class MainWindow(QMainWindow):
         paths, _ = QFileDialog.getOpenFileNames(self, '添加本地视频', '', '视频 (*.mp4 *.mov *.mkv *.avi *.webm)')
         if paths:
             self.add_candidates(local_files_to_rows(paths))
+
+    def open_download_folder(self):
+        target = (self.folder / 'videos') if self.folder else Path(self.config['output_root'])
+        target.mkdir(parents=True, exist_ok=True)
+        local_open(target)
 
     def add_candidates(self, rows, original=None):
         if self.is_running():

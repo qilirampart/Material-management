@@ -304,6 +304,15 @@ class CandidateTableUiTests(unittest.TestCase):
         self.assertEqual(self.window.checked, {original})
         self.assertFalse(self.window.undo_remove_button.isEnabled())
 
+    def test_open_download_folder_targets_the_current_batch_videos_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.window.folder = Path(folder)
+            with patch('src.desktop.local_open') as open_folder:
+                self.window.open_download_folder()
+
+            open_folder.assert_called_once_with(Path(folder) / 'videos')
+            self.assertTrue((Path(folder) / 'videos').is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
