@@ -1109,6 +1109,10 @@ class MainWindow(QMainWindow):
         if index is None and event.get('video_id') in self.batch_task_ids:
             index = self.batch_task_ids.index(event['video_id']) + 1
         if event.get('workers', 1) > 1:
+            active = event.get('running', 0)
+            self.work_status.setText(f'并发下载中 · 活跃 {active} 条 · 共 {total}')
+            return
+        if event.get('workers', 1) > 1:
             self.work_status.setText(
                 f"并发下载中 {event.get('running', 0)} / {event['workers']} · 共 {total}"
             )

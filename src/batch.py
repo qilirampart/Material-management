@@ -262,6 +262,57 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
     persist()
     parallel_failures = {}
     download_concurrency = download_concurrency_for(config, operation)
+    rows_by_id = {row["video_id"]: row for row in rows}
+
+    def finish_parallel_download(video_id, result):
+        """Persist and review a completed parallel download before the queue ends."""
+        row = rows_by_id[video_id]
+        task_index = task_positions[video_id]
+        target = output / "videos" / f"{video_id}.mp4"
+        old = records.get(video_id, {})
+        r = {"video_id": video_id, "status": "pending", "download": "\u672a\u4e0b\u8f7d",
+             "uploaded": False, "video_path": str(target), "reason": "", "frames": [], "hits": []}
+        records[video_id] = r
+        seen.add(video_id)
+        if not result.get("ok"):
+            failure_reason = result.get("reason") or "download failed"
+            r.update(status="download_failed", reason=f"\u4e0b\u8f7d\u6216\u6821\u9a8c\u5931\u8d25\uff1a{failure_reason}")
+            persist()
+            return
+        try:
+            digest = file_hash(target)
+            meta = result["metadata"]
+            r.update(download="\u5df2\u4e0b\u8f7d", metadata=meta, video_sha256=digest, status="review_required")
+        except Exception as exc:
+            r.update(status="download_failed", reason=f"\u4e0b\u8f7d\u5b8c\u6210\u540e\u8bfb\u53d6\u5931\u8d25\uff1a{error_summary(exc)}")
+            persist()
+            return
+        persist()
+        if download_only:
+            if old.get('video_sha256') == digest and old.get('status') in {'sample_clear', 'blocked'}:
+                records[video_id] = old
+            else:
+                r['reason'] = '\u4ec5\u4e0b\u8f7d\uff0c\u672a\u8c03\u7528\u6a21\u578b'
+            persist()
+            return
+        if not force_review and old.get("fingerprint") == stamp and old.get("video_sha256") == digest and old.get("status") in {"blocked", "sample_clear"}:
+            if old.get("frames") and all(Path(f["path"]).is_file() and file_hash(f["path"]) == f.get("sha256") for f in old["frames"]):
+                records[video_id] = old
+                persist()
+                return
+        try:
+            emit("progress", video_id=video_id, stage="\u62bd\u53d6\u7247\u5934\u4e09\u5e27", task_index=task_index, task_total=task_total)
+            r["frames"] = media.extract_frames(target, output / "frames" / video_id)
+            for frame in r["frames"]:
+                frame["sha256"] = file_hash(frame["path"])
+            emit("progress", video_id=video_id, stage="\u56fe\u7247\u8bc6\u522b", task_index=task_index, task_total=task_total)
+            r.update(vision.review(r["frames"], profile, logo, phrases))
+            r["fingerprint"] = stamp
+        except Exception as exc:
+            r.update(status="review_required", reason=f"\u62bd\u5e27\u6216\u8bc6\u522b\u5931\u8d25\uff1a{error_summary(exc)}")
+        if not meta.get("audio") and r["status"] != "blocked":
+            r.update(status="review_required", reason="\u89c6\u9891\u65e0\u97f3\u8f68\uff0c\u9700\u590d\u6838\u4e0b\u8f7d\u5b8c\u6574\u6027")
+        persist()
     if download_concurrency > 1:
         jobs = []
         scheduled_ids = set()
@@ -329,6 +380,10 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                                 result = future.result()
                             except Exception as exc:
                                 result = {"ok": False, "reason": error_summary(exc)}
+                            # Keep the network slots full, then turn this
+                            # completed download into a review result right away.
+                            submit_available(executor, event_queue)
+                            finish_parallel_download(video_id, result)
                             if not result.get("ok"):
                                 parallel_failures[video_id] = result.get("reason", "下载失败")
                         submit_available(executor, event_queue)
