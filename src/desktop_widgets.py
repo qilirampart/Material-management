@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QDialog, QScrollArea, QStackedWidget, QListWidget, QListWidgetItem,
 )
 
-from src.paths import RESOURCE_ROOT, DATA_ROOT
+from src.paths import RESOURCE_ROOT, APP_RUNTIME_ROOT
 from src.browser_session import configure_persistent_profile, platform_browser_root
 from src.edge_cdp import (
     edge_target_ids,
@@ -489,7 +489,7 @@ class PlatformPage(QWidget):
         self.edge_focus_timer.setInterval(15)
         self.edge_focus_timer.timeout.connect(self._sync_edge_input_focus)
         QApplication.instance().focusChanged.connect(self._release_edge_focus_for_widget)
-        self.preferences_path = Path(config.get('upload_preferences_path', DATA_ROOT / 'runtime' / 'upload-preferences.json'))
+        self.preferences_path = Path(config.get('upload_preferences_path', APP_RUNTIME_ROOT / 'upload-preferences.json'))
         self.upload_preferences = load_upload_preferences(self.preferences_path)
         self.upload_config_dialog = UploadConfigDialog(self.upload_preferences['uploader_initials'], self)
         self.upload_config_dialog.submitted.connect(self.prepare_upload)

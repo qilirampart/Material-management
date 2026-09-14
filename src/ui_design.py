@@ -10,7 +10,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFormLayout, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QCheckBox,
     QFileDialog, QMessageBox, QGridLayout, QDialog, QScrollArea)
-from src.paths import DATA_ROOT, RESOURCE_ROOT
+from src.paths import APP_RUNTIME_ROOT, RESOURCE_ROOT
 from src.update import APP_VERSION, REPOSITORY, check_for_update, download_update
 from src.vision import PHRASES, image_part
 
@@ -309,7 +309,7 @@ class SettingsPage(QWidget):
             edit.setText(path)
 
     def open_logs(self):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(DATA_ROOT / 'runtime')))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(APP_RUNTIME_ROOT)))
 
     @staticmethod
     def _file_size(size):
@@ -365,7 +365,7 @@ class SettingsPage(QWidget):
         def task():
             return download_update(
                 asset,
-                DATA_ROOT / 'runtime' / 'updates',
+                APP_RUNTIME_ROOT / 'updates',
                 progress=lambda data: self.update_download_task.progress.emit(data),
             )
 
@@ -467,7 +467,7 @@ class SettingsPage(QWidget):
         if not config['output_root'] or not config['phrases']:
             self.set_message('请填写素材目录和检测短语。')
             return
-        path = DATA_ROOT / 'runtime/model_profiles.json'
+        path = APP_RUNTIME_ROOT / 'model_profiles.json'
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             save_json(path, {'llm': {'profiles': self.entries}})

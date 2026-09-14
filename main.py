@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from src.paths import DATA_ROOT, prepare_environment
+from src.paths import APP_RUNTIME_ROOT, prepare_environment
 
 
 if __name__ == "__main__":
@@ -22,7 +22,7 @@ if __name__ == "__main__":
         raise SystemExit(smoke(sys.argv[2]))
     try:
         desktop_config = json.loads(
-            (DATA_ROOT / "runtime" / "desktop_config.json").read_text(encoding="utf-8-sig")
+            (APP_RUNTIME_ROOT / "desktop_config.json").read_text(encoding="utf-8-sig")
         )
     except (OSError, TypeError, ValueError):
         desktop_config = {}

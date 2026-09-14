@@ -7,7 +7,7 @@ from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from src.paths import DATA_ROOT
+from src.paths import APP_RUNTIME_ROOT
 
 
 EDGE_LOCATIONS = (
@@ -22,7 +22,7 @@ VK_LBUTTON = 0x01
 
 def persistent_edge_profile(config: dict) -> Path:
     configured = str(config.get("edge_profile_path", "")).strip()
-    return Path(configured).expanduser().resolve() if configured else DATA_ROOT / "runtime" / "edge-cdp-profile"
+    return Path(configured).expanduser().resolve() if configured else APP_RUNTIME_ROOT / "edge-cdp-profile"
 
 
 def find_edge() -> Path:

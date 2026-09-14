@@ -5,9 +5,9 @@ import errno
 import shutil
 import tempfile
 from pathlib import Path
-from src.paths import DATA_ROOT
+from src.paths import APP_RUNTIME_ROOT
 
-DOWNLOADER_CONFIG_PATH = DATA_ROOT / "runtime" / "downloader_config.json"
+DOWNLOADER_CONFIG_PATH = APP_RUNTIME_ROOT / "downloader_config.json"
 
 
 class ApiConfigService:
@@ -26,7 +26,7 @@ class ApiConfigService:
 def build_download_output_path(title, suffix=".mp4"):
     # Temporary paths are later validated and atomically promoted to the video-ID path.
     import os
-    folder = DATA_ROOT / "runtime" / "downloads"
+    folder = APP_RUNTIME_ROOT / "downloads"
     folder.mkdir(parents=True, exist_ok=True)
     fd, filename = tempfile.mkstemp(prefix="douyin_", suffix=suffix, dir=str(folder))
     os.close(fd)

@@ -26,7 +26,7 @@ from src.media import (
     effective_video_bitrate_bps,
     probe,
 )
-from src.paths import RESOURCE_ROOT, DATA_ROOT, prepare_environment
+from src.paths import RESOURCE_ROOT, APP_DATA_ROOT, APP_RUNTIME_ROOT, prepare_environment
 from src.upload import enhance_selected_bitrates
 from src.vision import PHRASES, load_profile, fingerprint
 from src.desktop_widgets import button, title, local_open, SettingsPage, ReviewPage, PlatformPage
@@ -119,10 +119,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("点众 · 素材投放助手")
         self.resize(1366, 840)
         self.setMinimumSize(980, 680)
-        self.config_path = DATA_ROOT / "runtime" / "desktop_config.json"
+        self.config_path = APP_RUNTIME_ROOT / "desktop_config.json"
         self.config = json.loads((RESOURCE_ROOT / "config.example.json").read_text(encoding="utf-8"))
         self.config.update(read_json(self.config_path, {}))
-        self.config.setdefault("output_root", str(DATA_ROOT / "output"))
+        self.config.setdefault("output_root", str(APP_DATA_ROOT / "output"))
         self.rows, self.records, self.notes = [], {}, {}
         self.checked = set()
         self.io_task = None
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         self.close_after = False
         self.event_offset = 0
         self.current_fingerprint = None
-        self.runtime = DATA_ROOT / "runtime"
+        self.runtime = APP_RUNTIME_ROOT
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.event_timer = QTimer(self)
         self.event_timer.setInterval(350)
@@ -183,8 +183,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("就绪 · 导入需求表开始 · 内部平台上传尚未接入")
         if restore and self.config.get('restore_batch', True):
             last = self.config.get("last_batch", "")
-            if not last and (DATA_ROOT / "output/pilot/results.json").exists():
-                last = str(DATA_ROOT / "output/pilot")
+            if not last and (APP_DATA_ROOT / "output/pilot/results.json").exists():
+                last = str(APP_DATA_ROOT / "output/pilot")
             if last and (Path(last) / "results.json").is_file():
                 self.open_batch(Path(last))
 
@@ -699,7 +699,7 @@ class MainWindow(QMainWindow):
             self.table.setRowHidden(index, not (matches and query in text.casefold()))
 
     def import_excel(self):
-        path, _ = QFileDialog.getOpenFileName(self, '导入需求表', str(DATA_ROOT), 'Excel (*.xlsx)')
+        path, _ = QFileDialog.getOpenFileName(self, '导入需求表', str(APP_DATA_ROOT), 'Excel (*.xlsx)')
         if not path or (self.io_task and self.io_task.isRunning()):
             return
         self.set_busy(True)
@@ -735,7 +735,7 @@ class MainWindow(QMainWindow):
             if not self.input_path or not self.input_path.exists():
                 # Compatibility with the existing pilot generated before the desktop UI.
                 from src.batch import file_hash
-                candidates = [self.folder / "input.xlsx", *DATA_ROOT.glob("*.xlsx")]
+                candidates = [self.folder / "input.xlsx", *APP_DATA_ROOT.glob("*.xlsx")]
                 self.input_path = next((p for p in candidates if p.is_file() and file_hash(p) == state.get("input_sha256")), None)
             self.notes = read_json(self.folder / "reviews.json", {})
             self.config["last_batch"] = str(self.folder)
