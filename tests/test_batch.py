@@ -3,11 +3,29 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
-from src.batch import read_input
+from src.batch import read_input, video_target_for_row
 from src.task_input import parse_upload_drama_filename
 
 
 class InputTests(unittest.TestCase):
+    def test_video_targets_are_grouped_by_safe_drama_name(self):
+        root = Path("C:/output")
+        row = {"video_id": "123", "source": {"剧名": "第一部：测试/剧"}}
+
+        self.assertEqual(
+            video_target_for_row(root, row),
+            root / "videos" / "第一部：测试_剧" / "123.mp4",
+        )
+
+    def test_existing_flat_video_path_is_reused_after_folder_upgrade(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            legacy = root / "videos" / "123.mp4"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_bytes(b"existing")
+            row = {"video_id": "123", "source": {"剧名": "第一部"}}
+
+            self.assertEqual(video_target_for_row(root, row), legacy)
     def test_filename_drama_info_extracts_platform_id_and_name(self):
         self.assertEqual(
             parse_upload_drama_filename("41000329324-垃圾桶里捡到爹.xlsx"),

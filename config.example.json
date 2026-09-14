@@ -10,5 +10,6 @@
   "internal_browser_debug_port": 9233,
   "developer_edge_mode": false,
   "platform_browser_data_path": "",
-  "download_concurrency": 1
+  "download_concurrency": 1,
+  "minimum_video_short_edge": 720
 }

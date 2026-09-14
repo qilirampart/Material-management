@@ -39,6 +39,8 @@ class DouyinBrowserProbeResult:
     audio_url: str = ""
     title: str = ""
     source: str = "browser"
+    width: int = 0
+    height: int = 0
 
 
 class _DouyinMediaRequestInterceptor(QWebEngineUrlRequestInterceptor):
@@ -73,6 +75,7 @@ class _DouyinBrowserProbe(QObject):
         self._title = ""
         self._source = "browser"
         self._video_candidates: set[str] = set()
+        self._dimensions_by_url: dict[str, tuple[int, int]] = {}
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(600)
@@ -220,6 +223,12 @@ class _DouyinBrowserProbe(QObject):
             if not looks_like_media_url(media_url):
                 continue
             self._video_candidates.add(media_url)
+            try:
+                width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+            except (TypeError, ValueError):
+                width, height = 0, 0
+            if width > 0 and height > 0:
+                self._dimensions_by_url[media_url] = (width, height)
 
         if self._video_candidates:
             self._video_url = max(self._video_candidates, key=media_url_quality_score)
@@ -242,6 +251,7 @@ class _DouyinBrowserProbe(QObject):
     def _finish_collected_streams(self) -> None:
         if self._finished or not self._video_url:
             return
+        width, height = self._dimensions_by_url.get(self._video_url, (0, 0))
         self._finish_success(
             DouyinBrowserProbeResult(
                 page_url=self._page_url or self._url,
@@ -249,6 +259,8 @@ class _DouyinBrowserProbe(QObject):
                 audio_url=self._audio_url,
                 title=self._title,
                 source=self._source,
+                width=width,
+                height=height,
             )
         )
 

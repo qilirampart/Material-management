@@ -20,6 +20,19 @@ MINIMUM_VIDEO_BITRATE_KBPS = 3500
 TARGET_UPLOAD_BITRATE_KBPS = 4200
 
 
+def minimum_dimension_reason(metadata, minimum_short_edge=720):
+    """Return a user-facing reason when a known video size is below the filter."""
+    try:
+        minimum = int(minimum_short_edge or 0)
+        width = int(metadata.get("width") or 0)
+        height = int(metadata.get("height") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return ""
+    if minimum > 0 and width > 0 and height > 0 and min(width, height) < minimum:
+        return f"视频尺寸 {width}×{height}，短边 {min(width, height)} < {minimum}p，未保留"
+    return ""
+
+
 def _number(value, default=0.0):
     try:
         return float(value)

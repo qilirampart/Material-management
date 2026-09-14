@@ -1,9 +1,22 @@
 import unittest
+from unittest.mock import patch
 
-from src.vendor.douyin import DouyinDownloadService
+from src.vendor.douyin import DouyinDownloadService, DouyinResolutionRejected
 
 
 class DownloadQualityTests(unittest.TestCase):
+    def test_browser_dimension_below_filter_is_rejected_before_transfer(self):
+        service = DouyinDownloadService()
+        payload = {"media_url": "https://cdn.example/video.mp4", "width": 576, "height": 1024}
+
+        with patch.object(service, "_resolve_share_url_via_browser", return_value=(payload, "browser://test")), \
+             patch.object(service, "_download_file") as download_file:
+            with self.assertRaises(DouyinResolutionRejected):
+                service._download_via_browser_fallback(
+                    "https://www.douyin.com/video/123", minimum_short_edge=720,
+                )
+
+        download_file.assert_not_called()
     def test_parser_candidates_prefer_highest_reported_bitrate(self):
         payload = {
             "bit_rate": [

@@ -10,6 +10,10 @@ from src.paths import APP_RUNTIME_ROOT
 DOWNLOADER_CONFIG_PATH = APP_RUNTIME_ROOT / "downloader_config.json"
 
 
+class VideoResolutionRejected(RuntimeError):
+    """A downloaded stream did not meet the configured minimum dimensions."""
+
+
 class ApiConfigService:
     """In-memory parser settings injected by Downloader; no source-project writes."""
     def __init__(self):
@@ -37,6 +41,7 @@ class Downloader:
     def __init__(self, config):
         from src.vendor.douyin import DouyinDownloadService, _DEFAULT_CONFIG
         self.service = DouyinDownloadService()
+        self.minimum_video_short_edge = int(config.get("minimum_video_short_edge", 0) or 0)
         self.service._config = dict(_DEFAULT_CONFIG)
         settings = Path(config["downloader_config_path"])
         if settings.is_file():
@@ -51,12 +56,26 @@ class Downloader:
         from src.download_progress import DownloadProgress
         emit = getattr(self, 'on_event', None) or (lambda event: None)
         emit({'type': 'progress', 'stage': '解析视频链接'})
-        result = self.service.download_from_text(url, progress_callback=DownloadProgress(emit))
+        try:
+            result = self.service.download_from_text(
+                url,
+                progress_callback=DownloadProgress(emit),
+                minimum_short_edge=getattr(self, "minimum_video_short_edge", 0),
+            )
+        except Exception as exc:
+            from src.vendor.douyin import DouyinResolutionRejected
+            if isinstance(exc, DouyinResolutionRejected):
+                raise VideoResolutionRejected(str(exc)) from exc
+            raise
         source = Path(result.local_path)
         staged = target.with_suffix(".part")
         try:
             emit({'type': 'progress', 'stage': '完整性校验'})
             meta = validate_video(source)
+            from src.media import minimum_dimension_reason
+            reason = minimum_dimension_reason(meta, getattr(self, "minimum_video_short_edge", 0))
+            if reason:
+                raise VideoResolutionRejected(reason)
             emit({'type': 'progress', 'stage': '保存视频文件'})
             target.parent.mkdir(parents=True, exist_ok=True)
             try:

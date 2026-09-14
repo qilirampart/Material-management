@@ -4,10 +4,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from src.download_support import Downloader
+from src.download_support import Downloader, VideoResolutionRejected
 
 
 class DestinationTests(unittest.TestCase):
+    def test_download_discards_video_below_minimum_short_edge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.mp4"
+            source.write_bytes(b"low resolution video")
+            target = Path(folder) / "videos" / "123.mp4"
+            downloader = Downloader.__new__(Downloader)
+            downloader.service = Mock()
+            downloader.minimum_video_short_edge = 720
+            downloader.service.download_from_text.return_value = SimpleNamespace(local_path=str(source))
+
+            with patch("src.media.validate_video", return_value={"audio": True, "width": 576, "height": 1024}):
+                with self.assertRaises(VideoResolutionRejected) as raised:
+                    downloader.download("https://www.douyin.com/video/123", target)
+
+            self.assertIn("576×1024", str(raised.exception))
+            self.assertFalse(target.exists())
+            self.assertFalse(source.exists())
     def test_download_can_be_saved_on_another_volume(self):
         root = Path(__file__).resolve().parents[1] / "output"
         root.mkdir(exist_ok=True)

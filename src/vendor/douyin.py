@@ -52,6 +52,10 @@ class DouyinDownloadError(RuntimeError):
     pass
 
 
+class DouyinResolutionRejected(DouyinDownloadError):
+    """Browser metadata shows the stream cannot satisfy the size rule."""
+
+
 class _SlowDownloadCandidateError(DouyinDownloadError):
     pass
 
@@ -78,6 +82,7 @@ class DouyinDownloadService:
         text: str,
         progress_callback: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        minimum_short_edge: int = 0,
     ) -> DouyinDownloadResult:
         share_url = self.extract_share_url(text)
         if not share_url:
@@ -95,7 +100,10 @@ class DouyinDownloadService:
                     author=author,
                     progress_callback=progress_callback,
                     should_cancel=should_cancel,
+                    minimum_short_edge=minimum_short_edge,
                 )
+            except DouyinResolutionRejected:
+                raise
             except DouyinDownloadError as exc:
                 browser_first_error = str(exc).strip() or "unknown browser error"
                 self._logger.warning(
@@ -131,7 +139,10 @@ class DouyinDownloadService:
                     author=author,
                     progress_callback=progress_callback,
                     should_cancel=should_cancel,
+                    minimum_short_edge=minimum_short_edge,
                 )
+            except DouyinResolutionRejected:
+                raise
             except DouyinDownloadError as fallback_exc:
                 self._logger.warning(
                     "Douyin browser fallback failed. share_url=%s error=%s",
@@ -187,7 +198,10 @@ class DouyinDownloadService:
                 author=author,
                 progress_callback=progress_callback,
                 should_cancel=should_cancel,
+                minimum_short_edge=minimum_short_edge,
             )
+        except DouyinResolutionRejected:
+            raise
         except DouyinDownloadError as exc:
             if should_cancel is not None and should_cancel():
                 raise
@@ -203,6 +217,7 @@ class DouyinDownloadService:
         author: str | None = None,
         progress_callback: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        minimum_short_edge: int = 0,
     ) -> DouyinDownloadResult:
         self._check_cancelled(should_cancel)
         payload, parser_url = self._resolve_share_url_via_browser(share_url, should_cancel=should_cancel)
@@ -210,6 +225,15 @@ class DouyinDownloadService:
         audio_url = str(payload.get("audio_url") or payload.get("audioUrl") or "").strip()
         if not media_url:
             raise DouyinDownloadError("浏览器已打开页面，但没有拿到可下载的视频地址")
+        try:
+            width, height = int(payload.get("width") or 0), int(payload.get("height") or 0)
+            minimum = int(minimum_short_edge or 0)
+        except (TypeError, ValueError):
+            width, height, minimum = 0, 0, 0
+        if minimum > 0 and width > 0 and height > 0 and min(width, height) < minimum:
+            raise DouyinResolutionRejected(
+                f"视频尺寸 {width}×{height}，短边 {min(width, height)} < {minimum}p，未下载"
+            )
 
         resolved_title = title or self._clean_browser_title(str(payload.get("title") or "")) or None
         suffix = self._guess_suffix(media_url)
@@ -272,6 +296,8 @@ class DouyinDownloadService:
                 "audio_url": result.audio_url,
                 "title": result.title,
                 "source": result.source,
+                "width": getattr(result, "width", 0),
+                "height": getattr(result, "height", 0),
             }
         except Exception as exc:  # noqa: BLE001
             detail = str(exc).strip() or type(exc).__name__

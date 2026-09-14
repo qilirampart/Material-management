@@ -324,6 +324,16 @@ class MainWindow(QMainWindow):
         self.download_concurrency.setToolTip('浏览器探针会占用网络和内存；默认串行，2 并发通常更均衡。')
         self.download_concurrency.currentIndexChanged.connect(self.save_download_concurrency)
         toolbar.addWidget(self.download_concurrency)
+        self.minimum_resolution = QComboBox()
+        self.minimum_resolution.addItem('尺寸不限', 0)
+        self.minimum_resolution.addItem('短边 ≥ 720p', 720)
+        self.minimum_resolution.addItem('短边 ≥ 1080p', 1080)
+        saved_resolution = int(self.config.get('minimum_video_short_edge', 720) or 0)
+        resolution_index = self.minimum_resolution.findData(saved_resolution)
+        self.minimum_resolution.setCurrentIndex(resolution_index if resolution_index >= 0 else 1)
+        self.minimum_resolution.setToolTip('下载前优先按浏览器读取的尺寸过滤；所有下载结果都会再校验一次。')
+        self.minimum_resolution.currentIndexChanged.connect(self.save_minimum_resolution)
+        toolbar.addWidget(self.minimum_resolution)
         self.start_button = button('处理勾选素材', self.start_or_pause, True)
         toolbar.addWidget(self.start_button)
         box.addLayout(toolbar)
@@ -668,7 +678,7 @@ class MainWindow(QMainWindow):
     def set_busy(self, busy):
         for control in [
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
-            self.mode, self.download_concurrency, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
+            self.mode, self.download_concurrency, self.minimum_resolution, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
             self.undo_remove_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
@@ -775,7 +785,7 @@ class MainWindow(QMainWindow):
             if id_ in selected:
                 from PySide6.QtCore import QItemSelectionModel
                 self.table.selectionModel().select(self.table.model().index(index, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
-        self.summary.setText(f"{len(self.rows)} 条记录    已下载 {downloads}    抽检未发现 {counts['sample_clear']}    命中 {counts['blocked']}    待复核/失败 {counts['review_required'] + counts['download_failed']}    待处理 {counts['pending']}    规则更新 {counts['stale']}")
+        self.summary.setText(f"{len(self.rows)} 条记录    已下载 {downloads}    尺寸不足 {counts['resolution_filtered']}    抽检未发现 {counts['sample_clear']}    命中 {counts['blocked']}    待复核/失败 {counts['review_required'] + counts['download_failed']}    待处理 {counts['pending']}    规则更新 {counts['stale']}")
         self.table.blockSignals(False)
         self.table.setUpdatesEnabled(True)
         self.selection_label.setText(f'已勾选 {len(self.checked)} 条')
@@ -1049,6 +1059,13 @@ class MainWindow(QMainWindow):
         except OSError:
             self.statusBar().showMessage('下载并发设置未能保存；本次任务仍会使用当前选择。')
 
+    def save_minimum_resolution(self):
+        self.config['minimum_video_short_edge'] = int(self.minimum_resolution.currentData() or 0)
+        try:
+            save_json(self.config_path, self.config)
+        except OSError:
+            self.statusBar().showMessage('视频尺寸筛选设置未能保存；本次任务仍会使用当前选择。')
+
     def export(self):
         if not self.folder:
             return
@@ -1122,8 +1139,10 @@ class MainWindow(QMainWindow):
         self.stop_path = self.runtime / f"job-{token}.stop"
         self.event_path = self.request_path.with_suffix(".events.jsonl")
         self.event_offset = 0
+        self.worker_outcome = ""
         task_config = dict(self.config)
         task_config["download_concurrency"] = int(self.download_concurrency.currentData() or 1)
+        task_config["minimum_video_short_edge"] = int(self.minimum_resolution.currentData() or 0)
         save_json(self.request_path, {"input_path": str(self.input_path), "output": str(self.folder), "config": task_config,
                                      "resume": True, "operation": operation, "selected_ids": list(dict.fromkeys(selected)),
                                      "force_review": force, "stop_file": str(self.stop_path)})
@@ -1192,6 +1211,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("已暂停，可继续" if kind == "paused" else "本轮任务结束，结果已保存")
             elif kind == "error":
                 self.statusBar().showMessage("任务异常：" + event["message"])
+            elif kind == "worker_exit":
+                self.worker_outcome = str(event.get("outcome") or "")
 
     def worker_error(self, error):
         if error == QProcess.FailedToStart:
@@ -1266,8 +1287,10 @@ class MainWindow(QMainWindow):
         self.set_busy(False)
         if self.batch_lock:
             self.batch_lock.unlock()
-        if code:
+        if code or self.worker_outcome == "failed":
             self.statusBar().showMessage("后台任务异常退出，进度已保留。可继续或检查 runtime 中的任务事件记录。")
+        elif self.worker_outcome == "paused":
+            self.statusBar().showMessage("任务已按暂停请求结束，已完成结果已保存。")
         if self.close_after:
             self.close()
 

@@ -14,12 +14,24 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from src import media, vision
-from src.download_support import Downloader
+from src.download_support import Downloader, VideoResolutionRejected
 from src.task_input import parse_upload_drama_filename
 
 HEADERS = ["剧名", "视频ID", "热度", "点赞数", "创建时间", "原始链接"]
 LABELS = {"pending": "待处理", "download_failed": "下载失败", "review_required": "待复核",
-          "blocked": "命中拦截", "sample_clear": "片头抽检未发现", "invalid_input": "输入无效"}
+          "blocked": "命中拦截", "sample_clear": "片头抽检未发现", "invalid_input": "输入无效",
+          "resolution_filtered": "尺寸不足（未下载）"}
+
+
+def video_target_for_row(output, row):
+    """Keep new clips per drama while retaining paths from earlier flat batches."""
+    drama = str((row.get("source") or {}).get("剧名") or "未命名剧集").strip()
+    drama = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", drama).strip(". ")
+    drama = drama[:80] or "未命名剧集"
+    output = Path(output)
+    target = output / "videos" / drama / f"{row['video_id']}.mp4"
+    legacy_target = output / "videos" / f"{row['video_id']}.mp4"
+    return legacy_target if legacy_target.is_file() and not target.is_file() else target
 
 
 def error_summary(exc):
@@ -75,6 +87,8 @@ def _download_worker(url, target_text, config, allow_redownload, event_queue=Non
         downloader.on_event = emit
         metadata = downloader.download(url, target)
         return {"ok": True, "metadata": metadata}
+    except VideoResolutionRejected as exc:
+        return {"ok": False, "filtered": True, "reason": str(exc)}
     except Exception as exc:  # Worker results must be serializable and safe for UI logs.
         return {"ok": False, "reason": error_summary(exc)}
 
@@ -268,7 +282,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         """Persist and review a completed parallel download before the queue ends."""
         row = rows_by_id[video_id]
         task_index = task_positions[video_id]
-        target = output / "videos" / f"{video_id}.mp4"
+        target = video_target_for_row(output, row)
         old = records.get(video_id, {})
         r = {"video_id": video_id, "status": "pending", "download": "\u672a\u4e0b\u8f7d",
              "uploaded": False, "video_path": str(target), "reason": "", "frames": [], "hits": []}
@@ -276,7 +290,10 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
         seen.add(video_id)
         if not result.get("ok"):
             failure_reason = result.get("reason") or "download failed"
-            r.update(status="download_failed", reason=f"\u4e0b\u8f7d\u6216\u6821\u9a8c\u5931\u8d25\uff1a{failure_reason}")
+            if result.get("filtered"):
+                r.update(status="resolution_filtered", reason=failure_reason)
+            else:
+                r.update(status="download_failed", reason=f"\u4e0b\u8f7d\u6216\u6821\u9a8c\u5931\u8d25\uff1a{failure_reason}")
             persist()
             return
         try:
@@ -320,7 +337,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
             id_ = row["video_id"]
             if id_ in scheduled_ids or id_ not in task_positions or row.get("local_path"):
                 continue
-            target = output / "videos" / f"{id_}.mp4"
+            target = video_target_for_row(output, row)
             # Existing files are validated by the normal path below. Only files
             # that need network work enter independent browser processes.
             if target.is_file():
@@ -410,7 +427,7 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                 'task_index': index,
                 'task_total': task_total,
             }) if on_event else None
-        target = output / "videos" / f"{id_}.mp4"
+        target = video_target_for_row(output, row)
         old = records.get(id_, {})
         if row.get('local_path'):
             target = Path(row['local_path'])
@@ -444,8 +461,18 @@ def run_batch(input_path, output, config, limit=None, resume=False, download_onl
                     meta = downloader.download(row["url"], target)
             else:
                 meta = downloader.download(row["url"], target)
+            dimension_reason = media.minimum_dimension_reason(
+                meta, config.get("minimum_video_short_edge", 0),
+            )
+            if dimension_reason:
+                raise VideoResolutionRejected(dimension_reason)
             digest = file_hash(target)
             r.update(download="已下载", metadata=meta, video_sha256=digest, status="review_required")
+        except VideoResolutionRejected as exc:
+            r.update(status="resolution_filtered", reason=str(exc))
+            persist()
+            print("  尺寸不足，未保留", flush=True)
+            continue
         except Exception as exc:
             # Avoid exposing request URLs/API secrets through third-party exception strings.
             r.update(status="review_required" if operation == "detect" or row.get("local_path") else "download_failed", reason=f"下载或校验失败：{error_summary(exc)}；可用 --resume 重试")
