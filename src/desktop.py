@@ -72,7 +72,7 @@ def with_runtime_config_defaults(config, runtime_root=APP_RUNTIME_ROOT, data_roo
 
 def default_material_output_root(d_drive_available=None):
     """Choose a portable first-run storage location without using build paths."""
-    if os.name == "nt":
+    if os.name == "nt" or d_drive_available is not None:
         has_d_drive = Path("D:/").is_dir() if d_drive_available is None else d_drive_available
         return Path("D:/DianZhong" if has_d_drive else "C:/DianZhong")
     return Path.home() / "DianZhong"
