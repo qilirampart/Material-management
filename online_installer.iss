@@ -31,9 +31,12 @@ begin
   if ProgressMax > 0 then begin
     WizardForm.ProgressGauge.Max := 100;
     WizardForm.ProgressGauge.Position := Round(Progress * 100 / ProgressMax);
-    WizardForm.StatusLabel.Caption := Format('正在下载完整安装包：%.1f / %.1f MB', [Progress / 1048576, ProgressMax / 1048576]);
+    WizardForm.StatusLabel.Caption := '正在下载完整安装包：' +
+      IntToStr(Progress div 1048576) + ' / ' +
+      IntToStr(ProgressMax div 1048576) + ' MB';
   end else
-    WizardForm.StatusLabel.Caption := Format('正在下载完整安装包：%.1f MB', [Progress / 1048576]);
+    WizardForm.StatusLabel.Caption := '正在下载完整安装包：' +
+      IntToStr(Progress div 1048576) + ' MB';
   Result := True;
 end;
 
