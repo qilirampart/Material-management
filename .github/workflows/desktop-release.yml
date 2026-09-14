@@ -11,7 +11,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.4.0
+        default: 0.4.1
         type: string
 
 permissions:
@@ -101,6 +101,7 @@ jobs:
       - name: Build macOS app bundle
         run: |
           python scripts/build_macos.py
+          python scripts/build_macos_online_installer.py --version "${{ inputs.version }}"
       - name: Package macOS app
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -111,6 +112,7 @@ jobs:
           name: macos-app
           path: |
             release/DianzhongMaterialAssistant-macos-${{ inputs.version }}.zip
+            release/DianzhongMaterialAssistant-OnlineInstaller-macos-${{ inputs.version }}.zip
           if-no-files-found: error
 
   publish:
