@@ -1,6 +1,9 @@
 name: Build desktop release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       source_ref:
@@ -18,8 +21,25 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare release inputs
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        shell: bash
+        run: |
+          source_ref="${{ inputs.source_ref || github.ref }}"
+          version="${{ inputs.version || github.ref_name }}"
+          version="${version#v}"
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test (${{ matrix.os }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
@@ -55,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
@@ -67,7 +87,7 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           python scripts/build_windows.py
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${env:RELEASE_VERSION}" installer.iss
@@ -78,8 +98,8 @@ jobs:
         with:
           name: windows-installer
           path: |
-            release/DianzhongMaterialAssistant-Setup-${{ inputs.version }}.exe
-            release/DianzhongMaterialAssistant-Downloader-${{ inputs.version }}.exe
+            release/DianzhongMaterialAssistant-Setup-${{ needs.prepare.outputs.version }}.exe
+            release/DianzhongMaterialAssistant-Downloader-${{ needs.prepare.outputs.version }}.exe
           if-no-files-found: error
 
   build-macos:
@@ -89,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
@@ -101,23 +121,23 @@ jobs:
       - name: Build macOS app bundle
         run: |
           python scripts/build_macos.py
-          python scripts/build_macos_online_installer.py --version "${{ inputs.version }}"
+          python scripts/build_macos_online_installer.py --version "${{ needs.prepare.outputs.version }}"
       - name: Package macOS app
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           ditto -c -k --sequesterRsrc --keepParent "release/素材投放助手.app" "release/DianzhongMaterialAssistant-macos-${RELEASE_VERSION}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
           path: |
-            release/DianzhongMaterialAssistant-macos-${{ inputs.version }}.zip
-            release/DianzhongMaterialAssistant-Downloader-macos-${{ inputs.version }}.zip
+            release/DianzhongMaterialAssistant-macos-${{ needs.prepare.outputs.version }}.zip
+            release/DianzhongMaterialAssistant-Downloader-macos-${{ needs.prepare.outputs.version }}.zip
           if-no-files-found: error
 
   publish:
     name: Publish GitHub release
-    needs: [build-windows, build-macos]
+    needs: [prepare, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -126,8 +146,8 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.version }}
-          name: v${{ inputs.version }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: v${{ needs.prepare.outputs.version }}
           generate_release_notes: true
           body: |
             Windows: 下载 `.exe` 安装包后直接运行。
