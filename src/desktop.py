@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import sys
 import threading
@@ -26,7 +27,7 @@ from src.media import (
     effective_video_bitrate_bps,
     probe,
 )
-from src.paths import RESOURCE_ROOT, APP_DATA_ROOT, APP_RUNTIME_ROOT, prepare_environment
+from src.paths import FROZEN, RESOURCE_ROOT, APP_DATA_ROOT, APP_RUNTIME_ROOT, prepare_environment
 from src.upload import enhance_selected_bitrates
 from src.vision import PHRASES, load_profile, fingerprint
 from src.desktop_widgets import button, title, local_open, SettingsPage, ReviewPage, PlatformPage
@@ -41,6 +42,40 @@ def read_json(path, fallback):
         return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return fallback
+
+
+def with_runtime_config_defaults(config, runtime_root=APP_RUNTIME_ROOT, data_root=APP_DATA_ROOT):
+    """Keep bundled defaults portable; credentials/configuration belong to each user."""
+    values = dict(config)
+    runtime_root = Path(runtime_root)
+    data_root = Path(data_root)
+    legacy_developer_paths = {
+        "E:/点众/YouTube字幕核验助手工作区/runtime/api_config.json",
+        "E:/点众/自动化工具/侵权巡检助手工作区/源码/runtime/api_config.json",
+        "E:/点众/自动化工具/侵权巡检助手工作区/源码/runtime/downloader_config.json",
+    }
+    values.setdefault("output_root", str(data_root / "output"))
+    for key, filename in (
+        ("model_config_path", "model_profiles.json"),
+        ("parser_config_path", "api_config.json"),
+        ("downloader_config_path", "downloader_config.json"),
+    ):
+        configured = str(values.get(key, "")).strip()
+        if configured.replace("\\", "/") in legacy_developer_paths:
+            configured = ""
+        if not configured:
+            values[key] = str(runtime_root / filename)
+        else:
+            values[key] = configured
+    return values
+
+
+def default_material_output_root(d_drive_available=None):
+    """Choose a portable first-run storage location without using build paths."""
+    if os.name == "nt":
+        has_d_drive = Path("D:/").is_dir() if d_drive_available is None else d_drive_available
+        return Path("D:/DianZhong" if has_d_drive else "C:/DianZhong")
+    return Path.home() / "DianZhong"
 
 
 def probe_missing_quality(items):
@@ -120,9 +155,13 @@ class MainWindow(QMainWindow):
         self.resize(1366, 840)
         self.setMinimumSize(980, 680)
         self.config_path = APP_RUNTIME_ROOT / "desktop_config.json"
+        first_run = FROZEN and not self.config_path.is_file()
         self.config = json.loads((RESOURCE_ROOT / "config.example.json").read_text(encoding="utf-8"))
         self.config.update(read_json(self.config_path, {}))
-        self.config.setdefault("output_root", str(APP_DATA_ROOT / "output"))
+        self.config = with_runtime_config_defaults(self.config)
+        if first_run:
+            self.config["output_root"] = self.choose_initial_output_root()
+            save_json(self.config_path, self.config)
         self.rows, self.records, self.notes = [], {}, {}
         self.checked = set()
         self.last_removed = None
@@ -359,6 +398,27 @@ class MainWindow(QMainWindow):
         body.addWidget(self.task_side)
         layout.addLayout(body, 1)
         self.add_page(page)
+
+    def choose_initial_output_root(self):
+        suggested = default_material_output_root()
+        try:
+            suggested.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # The selector can still offer another writable directory.
+            pass
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            '首次使用：选择素材保存目录',
+            str(suggested),
+        )
+        target = Path(selected) if selected else suggested
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            return str(target.resolve())
+        except OSError:
+            fallback = APP_DATA_ROOT / 'output'
+            fallback.mkdir(parents=True, exist_ok=True)
+            return str(fallback.resolve())
         self.set_busy(False)
 
     def new_batch(self):

@@ -53,6 +53,18 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(found["update_available"])
         self.assertEqual(found["asset"]["name"], "DianzhongMaterialAssistant-Setup-0.3.8.exe")
 
+    def test_check_skips_online_installer_for_windows_updates(self):
+        payload = {
+            "tag_name": "v0.3.8",
+            "html_url": "https://github.com/qilirampart/Material-management/releases/tag/v0.3.8",
+            "assets": [
+                {"name": "DianzhongMaterialAssistant-OnlineInstaller-0.3.8.exe", "size": 2, "browser_download_url": "https://github.com/qilirampart/Material-management/releases/download/v0.3.8/DianzhongMaterialAssistant-OnlineInstaller-0.3.8.exe"},
+                {"name": "DianzhongMaterialAssistant-Setup-0.3.8.exe", "size": 3, "browser_download_url": "https://github.com/qilirampart/Material-management/releases/download/v0.3.8/DianzhongMaterialAssistant-Setup-0.3.8.exe"},
+            ],
+        }
+        found = check_for_update(current_version="0.3.7", system="Windows", request_get=lambda *args, **kwargs: FakeResponse(payload))
+        self.assertEqual(found["asset"]["name"], "DianzhongMaterialAssistant-Setup-0.3.8.exe")
+
     def test_download_update_writes_atomically_and_reports_progress(self):
         updates = []
         with tempfile.TemporaryDirectory() as directory:

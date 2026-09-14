@@ -44,16 +44,26 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   DownloadedFile: String;
+  Attempt: Integer;
+  LastError: String;
 begin
   Result := '';
-  try
-    WizardForm.StatusLabel.Caption := '正在获取点众素材投放助手…';
-    WizardForm.ProgressGauge.Position := 0;
-    DownloadTemporaryFile(SetupUrl, SetupFileName, '', @DownloadProgress);
-    DownloadedFile := ExpandConstant('{tmp}\') + SetupFileName;
-    if not Exec(DownloadedFile, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
-      Result := '无法启动完整安装包。请重新下载或直接从 Release 页面下载完整安装包。';
-  except
-    Result := '下载完整安装包失败：' + GetExceptionMessage;
+  DownloadedFile := ExpandConstant('{tmp}\') + SetupFileName;
+  for Attempt := 1 to 3 do begin
+    try
+      WizardForm.StatusLabel.Caption := '正在下载完整安装包（第 ' + IntToStr(Attempt) + ' / 3 次）…';
+      WizardForm.ProgressGauge.Position := 0;
+      DownloadTemporaryFile(SetupUrl, SetupFileName, '', @DownloadProgress);
+      if not Exec(DownloadedFile, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
+        Result := '无法启动完整安装包。请重新下载或直接从 Release 页面下载完整安装包。';
+      Exit;
+    except
+      LastError := GetExceptionMessage;
+      if Attempt < 3 then begin
+        WizardForm.StatusLabel.Caption := '下载连接超时，正在重试…';
+        Sleep(1500 * Attempt);
+      end;
+    end;
   end;
+  Result := '下载完整安装包失败（已重试 3 次）：' + LastError + '。请直接从 Release 页面下载完整安装包。';
 end;

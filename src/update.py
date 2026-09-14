@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.4.7"
 REPOSITORY = "qilirampart/Material-management"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 LATEST_RELEASE_PAGE_URL = f"https://github.com/{REPOSITORY}/releases/latest"
@@ -37,7 +37,11 @@ def _platform_asset(assets: list[dict], system: str | None = None) -> dict | Non
     if not suffix:
         return None
     candidates = [asset for asset in assets if str(asset.get("name", "")).lower().endswith(suffix)]
-    preferred = [asset for asset in candidates if "dianzhongmaterialassistant" in str(asset.get("name", "")).lower()]
+    # The online installer is a shareable bootstrapper, not an in-app update.
+    # Updating through it downloads the same full installer a second time and
+    # can hit WinInet's short timeout on slow connections.
+    full_name = "dianzhongmaterialassistant-setup-" if system == "windows" else "dianzhongmaterialassistant-macos-"
+    preferred = [asset for asset in candidates if str(asset.get("name", "")).lower().startswith(full_name)]
     return (preferred or candidates or [None])[0]
 
 
