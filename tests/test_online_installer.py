@@ -7,6 +7,8 @@ class OnlineInstallerTests(unittest.TestCase):
         text = Path('online_installer.iss').read_text(encoding='utf-8-sig')
         self.assertIn('DownloadTemporaryFile', text)
         self.assertIn('DianzhongMaterialAssistant-Setup-{#AppVersion}.exe', text)
+        self.assertIn('OutputBaseFilename=DianzhongMaterialAssistant-Downloader-{#AppVersion}', text)
+        self.assertIn('CreateOutputProgressPage', text)
         self.assertIn('SetupIconFile=assets\\icons\\app-icon.ico', text)
         self.assertIn('IntToStr(Progress div 1048576)', text)
         self.assertNotIn('%.1f', text)

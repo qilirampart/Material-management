@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--version", required=True)
 args = parser.parse_args()
 version = args.version
-name = "DianzhongMaterialAssistant-OnlineInstaller"
+name = "DianzhongMaterialAssistant-Downloader"
 app = ROOT / "release" / f"{name}.app"
 contents = app / "Contents"
 macos = contents / "MacOS"
@@ -41,15 +41,15 @@ subprocess.run(["swiftc", str(source), "-framework", "Cocoa", "-o", str(binary)]
 (contents / "Info.plist").write_bytes(plistlib.dumps({
     "CFBundleName": "点众素材投放助手在线安装器",
     "CFBundleDisplayName": "点众素材投放助手在线安装器",
-    "CFBundleIdentifier": "com.dianzhong.materialassistant.onlineinstaller",
+    "CFBundleIdentifier": "com.dianzhong.materialassistant.downloader",
     "CFBundleExecutable": name,
     "CFBundleIconFile": "AppIcon",
     "CFBundlePackageType": "APPL",
     "CFBundleShortVersionString": version,
     "CFBundleVersion": version,
     "LSMinimumSystemVersion": "11.0",
-    "CFBundleName": "Dianzhong Material Assistant Online Installer",
-    "CFBundleDisplayName": "Dianzhong Material Assistant Online Installer",
+    "CFBundleName": "Dianzhong Material Assistant Downloader",
+    "CFBundleDisplayName": "Dianzhong Material Assistant Downloader",
 }))
 archive = ROOT / "release" / f"{name}-macos-{version}.zip"
 if archive.exists(): archive.unlink()

@@ -11,7 +11,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.4.7
+        default: 0.4.8
         type: string
 
 permissions:
@@ -79,7 +79,7 @@ jobs:
           name: windows-installer
           path: |
             release/DianzhongMaterialAssistant-Setup-${{ inputs.version }}.exe
-            release/DianzhongMaterialAssistant-OnlineInstaller-${{ inputs.version }}.exe
+            release/DianzhongMaterialAssistant-Downloader-${{ inputs.version }}.exe
           if-no-files-found: error
 
   build-macos:
@@ -112,7 +112,7 @@ jobs:
           name: macos-app
           path: |
             release/DianzhongMaterialAssistant-macos-${{ inputs.version }}.zip
-            release/DianzhongMaterialAssistant-OnlineInstaller-macos-${{ inputs.version }}.zip
+            release/DianzhongMaterialAssistant-Downloader-macos-${{ inputs.version }}.zip
           if-no-files-found: error
 
   publish:
