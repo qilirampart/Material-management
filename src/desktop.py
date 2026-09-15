@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QSpinBox,
 )
 
-from src.batch import LABELS, read_input, save_json, export_report
+from src.batch import LABELS, read_inputs, save_json, export_report
 from src.media import (
     MINIMUM_VIDEO_BITRATE_KBPS,
     describe_bitrate,
@@ -42,6 +42,24 @@ def read_json(path, fallback):
         return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return fallback
+
+
+def describe_worker_exit(exit_code, outcome, last_error="", last_event=None):
+    """Return an actionable worker failure message without exposing runtime paths."""
+    if not exit_code and outcome not in {"failed", ""}:
+        return ""
+    context = ""
+    if isinstance(last_event, dict):
+        video_id = str(last_event.get("video_id") or "").strip()
+        stage = str(last_event.get("stage") or "").strip()
+        if video_id:
+            context = video_id + (f"（{stage}）" if stage else "")
+    detail = str(last_error or "").strip()
+    if detail and context:
+        detail = context + "：" + detail
+    elif not detail:
+        detail = context or f"子进程退出码 {exit_code}"
+    return f"后台任务异常退出：{detail}。进度已保留，可勾选失败项后重试。"
 
 
 def with_runtime_config_defaults(config, runtime_root=APP_RUNTIME_ROOT, data_root=APP_DATA_ROOT):
@@ -178,6 +196,8 @@ class MainWindow(QMainWindow):
         self.batch_lock = None
         self.close_after = False
         self.event_offset = 0
+        self.last_worker_error = ""
+        self.last_worker_event = {}
         self.current_fingerprint = None
         self.runtime = APP_RUNTIME_ROOT
         self.runtime.mkdir(parents=True, exist_ok=True)
@@ -246,7 +266,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         add, box = card('添加素材')
         inputs = QHBoxLayout()
-        self.import_button = button('导入 Excel', self.import_excel)
+        self.import_button = button('批量导入 Excel', self.import_excel)
         inputs.addWidget(self.import_button)
         self.link_input = QLineEdit()
         self.link_input.setPlaceholderText('粘贴抖音分享链接或文字，可包含多条链接')
@@ -626,8 +646,10 @@ class MainWindow(QMainWindow):
             self.folder = Path(self.config['output_root']) / (datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:4])
             self.folder.mkdir(parents=True, exist_ok=True)
         if original:
-            dest = self.folder / ('source-' + uuid.uuid4().hex[:6] + '.xlsx')
-            shutil.copy2(original, dest)
+            originals = original if isinstance(original, (list, tuple)) else [original]
+            for original_path in originals:
+                dest = self.folder / ('source-' + uuid.uuid4().hex[:6] + '.xlsx')
+                shutil.copy2(original_path, dest)
         existing = {r['video_id'] for r in self.rows if not r['input_error']}
         for row in rows:
             if row['input_error'] or row['video_id'] not in existing:
@@ -809,14 +831,14 @@ class MainWindow(QMainWindow):
             self.table.setRowHidden(index, not (matches and query in text.casefold()))
 
     def import_excel(self):
-        path, _ = QFileDialog.getOpenFileName(self, '导入需求表', str(APP_DATA_ROOT), 'Excel (*.xlsx)')
-        if not path or (self.io_task and self.io_task.isRunning()):
+        paths, _ = QFileDialog.getOpenFileNames(self, '批量导入需求表', str(APP_DATA_ROOT), 'Excel (*.xlsx)')
+        if not paths or (self.io_task and self.io_task.isRunning()):
             return
         self.set_busy(True)
         self.start_button.setEnabled(False)
-        self.statusBar().showMessage('正在后台读取表格…')
-        self.io_task = Background(lambda: read_input(path), self)
-        self.io_task.result.connect(lambda rows: self.add_candidates(rows, path))
+        self.statusBar().showMessage(f'正在后台读取 {len(paths)} 个表格…')
+        self.io_task = Background(lambda: read_inputs(paths), self)
+        self.io_task.result.connect(lambda rows: self.add_candidates(rows, paths))
         self.io_task.failed.connect(self.statusBar().showMessage)
         self.io_task.finished.connect(lambda: self.set_busy(False))
         self.io_task.start()
@@ -1140,6 +1162,8 @@ class MainWindow(QMainWindow):
         self.event_path = self.request_path.with_suffix(".events.jsonl")
         self.event_offset = 0
         self.worker_outcome = ""
+        self.last_worker_error = ""
+        self.last_worker_event = {}
         task_config = dict(self.config)
         task_config["download_concurrency"] = int(self.download_concurrency.currentData() or 1)
         task_config["minimum_video_short_edge"] = int(self.minimum_resolution.currentData() or 0)
@@ -1197,6 +1221,7 @@ class MainWindow(QMainWindow):
                 self.current_id = ""
                 self.refresh_table()
             elif kind == "progress":
+                self.last_worker_event = dict(event)
                 self.current_id = event["video_id"]
                 self.current_stage = event["stage"]
                 self.show_task_position(event)
@@ -1206,15 +1231,18 @@ class MainWindow(QMainWindow):
                 self.show_stage_progress(self.current_id, self.current_stage)
                 self.statusBar().showMessage(self.current_id + " · " + self.current_stage)
             elif kind == 'download_progress':
+                self.last_worker_event = dict(event)
                 self.show_download_progress(event)
             elif kind in {"paused", "finished"}:
                 self.statusBar().showMessage("已暂停，可继续" if kind == "paused" else "本轮任务结束，结果已保存")
             elif kind == "error":
+                self.last_worker_error = str(event.get("message") or "")
                 self.statusBar().showMessage("任务异常：" + event["message"])
             elif kind == "worker_exit":
                 self.worker_outcome = str(event.get("outcome") or "")
 
     def worker_error(self, error):
+        self.last_worker_error = self.process.errorString()
         if error == QProcess.FailedToStart:
             self.event_timer.stop()
             self.set_busy(False)
@@ -1288,7 +1316,9 @@ class MainWindow(QMainWindow):
         if self.batch_lock:
             self.batch_lock.unlock()
         if code or self.worker_outcome == "failed":
-            self.statusBar().showMessage("后台任务异常退出，进度已保留。可继续或检查 runtime 中的任务事件记录。")
+            self.statusBar().showMessage(describe_worker_exit(
+                code, self.worker_outcome, self.last_worker_error, self.last_worker_event,
+            ))
         elif self.worker_outcome == "paused":
             self.statusBar().showMessage("任务已按暂停请求结束，已完成结果已保存。")
         if self.close_after:

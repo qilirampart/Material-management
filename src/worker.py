@@ -26,7 +26,7 @@ def main(request_path):
         run_batch(**request, on_event=emit, should_stop=stop.exists)
         emit({"type": "worker_exit", "outcome": "paused" if stop.exists() else "completed"})
         return 0
-    except Exception as exc:
+    except BaseException as exc:
         emit({"type": "error", "message": error_summary(exc)})
         emit({"type": "worker_exit", "outcome": "failed"})
         return 1

@@ -132,8 +132,22 @@ def read_input(path):
         if upload_drama_info:
             for row in rows:
                 row["upload_drama_info"] = dict(upload_drama_info)
+                # A workbook named ``platform-id-drama.xlsx`` is sufficient for
+                # a batch import. Keep an explicit sheet value when provided.
+                if not str(row["source"].get("剧名") or "").strip():
+                    row["source"]["剧名"] = upload_drama_info["drama_name"]
     finally:
         workbook.close()
+    return rows
+
+
+def read_inputs(paths):
+    """Read several requirement workbooks into one candidate batch."""
+    rows = []
+    for path in dict.fromkeys(str(Path(path)) for path in paths):
+        for row in read_input(path):
+            row["input_file"] = str(Path(path).resolve())
+            rows.append(row)
     return rows
 
 

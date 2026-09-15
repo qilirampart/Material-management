@@ -7,10 +7,23 @@ from unittest.mock import patch
 
 from openpyxl import Workbook
 from src.batch import _download_worker, download_concurrency_for, run_batch
+from src.desktop import describe_worker_exit
 from src.vision import classify
 
 
 class DesktopWorkerTests(unittest.TestCase):
+    def test_abnormal_worker_exit_keeps_the_actionable_error(self):
+        message = describe_worker_exit(
+            1,
+            "failed",
+            "BrokenProcessPool: browser probe process ended unexpectedly",
+            {"video_id": "7680000000000000001", "stage": "解析视频链接"},
+        )
+
+        self.assertIn("BrokenProcessPool", message)
+        self.assertIn("7680000000000000001", message)
+        self.assertIn("重试", message)
+
     def test_download_concurrency_is_limited_to_safe_browser_worker_count(self):
         self.assertEqual(download_concurrency_for({}, "download"), 1)
         self.assertEqual(download_concurrency_for({"download_concurrency": 2}, "download"), 2)
