@@ -76,7 +76,7 @@ def local_open(path):
 
 
 class AspectRatioContainer(QWidget):
-    def __init__(self, child=None, ratio=16 / 9, maximum_width=960, padding=16, parent=None):
+    def __init__(self, child=None, ratio=16 / 9, maximum_width=None, padding=16, parent=None):
         super().__init__(parent)
         self.ratio = ratio
         self.maximum_width = maximum_width
@@ -103,7 +103,7 @@ class AspectRatioContainer(QWidget):
             return
         available_width = max(0, self.width() - self.padding * 2)
         available_height = max(0, self.height() - self.padding * 2)
-        width = min(available_width, self.maximum_width)
+        width = available_width if self.maximum_width is None else min(available_width, self.maximum_width)
         height = round(width / self.ratio)
         if height > available_height:
             height = available_height
@@ -111,6 +111,13 @@ class AspectRatioContainer(QWidget):
         x = (self.width() - width) // 2
         y = (self.height() - height) // 2
         self.child.setGeometry(x, y, width, height)
+
+
+def platform_zoom_factor(stage_width, *, reference_width=960, base_zoom=0.67):
+    """Scale the embedded platform from laptop size up to native scale on wide displays."""
+    width = max(0, int(stage_width))
+    reference = max(1, int(reference_width))
+    return round(min(1.0, max(float(base_zoom), float(base_zoom) * width / reference)), 2)
 
 
 class NativeWindowViewport(QWidget):
@@ -686,12 +693,14 @@ class PlatformPage(QWidget):
     def _fit_edge_session(self):
         port = int(self.config.get('edge_debug_port', 9222))
         expected_bounds = edge_window_bounds(self.edge_window_handle)
+        viewport_width = self.browser_stage.width() - self.browser_stage.padding * 2
+        zoom = platform_zoom_factor(viewport_width)
         self.edge_zoom_task = Background(
             lambda: fit_new_edge_page(
                 self.edge_previous_targets,
                 self.address.text().strip(),
                 port,
-                0.67,
+                zoom,
                 expected_bounds=expected_bounds,
             ),
             self,

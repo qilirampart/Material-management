@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from PySide6.QtTest import QTest
 
-from src.desktop_widgets import AspectRatioContainer, PlatformPage
+from src.desktop_widgets import AspectRatioContainer, PlatformPage, platform_zoom_factor
 from src.upload import remember_upload_preferences
 
 
@@ -145,6 +145,22 @@ class PlatformUploadUiTests(unittest.TestCase):
         self.assertEqual(child.x(), 16)
         self.assertEqual(child.y(), 134)
         stage.deleteLater()
+
+    def test_default_browser_stage_uses_wide_display_space(self):
+        child = QWidget()
+        stage = AspectRatioContainer(child)
+        stage.resize(1600, 900)
+        stage.show()
+        QTest.qWait(20)
+
+        self.assertGreater(child.width(), 960)
+        self.assertEqual(child.height(), 868)
+        stage.deleteLater()
+
+    def test_platform_zoom_expands_with_browser_stage_width(self):
+        self.assertEqual(platform_zoom_factor(960), 0.67)
+        self.assertAlmostEqual(platform_zoom_factor(1400), 0.98, places=2)
+        self.assertEqual(platform_zoom_factor(1600), 1.0)
 
     @patch(
         "src.desktop_widgets.navigate_edge_page",

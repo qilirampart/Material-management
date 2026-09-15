@@ -80,6 +80,39 @@ class MediaTests(unittest.TestCase):
     @patch("src.media.validate_video")
     @patch("src.media.run")
     @patch("src.media.probe")
+    def test_bitrate_transcode_caps_requested_target_at_5000_kbps(
+        self, probe_video, run_ffmpeg, validate_video
+    ):
+        probe_video.return_value = {"duration": 10}
+        validate_video.return_value = {"video_bitrate_bps": 4_800_000}
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.media.hardware_h264_encoder", return_value=None):
+                transcode_for_upload_bitrate(
+                    Path(folder) / "source.mp4",
+                    Path(folder) / "output.mp4",
+                    target_kbps=6_000,
+                )
+
+        command = run_ffmpeg.call_args.args[0]
+        self.assertEqual(command[command.index("-b:v") + 1], "5000k")
+        self.assertEqual(command[command.index("-maxrate") + 1], "5000k")
+
+    @patch("src.media.validate_video", return_value={"video_bitrate_bps": 5_001_000})
+    @patch("src.media.run")
+    @patch("src.media.probe", return_value={"duration": 10})
+    @patch("src.media.hardware_h264_encoder", return_value=None)
+    def test_bitrate_transcode_rejects_output_above_5000_kbps(
+        self, _encoder, _probe_video, _run_ffmpeg, _validate_video
+    ):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(FFmpegError, "5000"):
+                transcode_for_upload_bitrate(
+                    Path(folder) / "source.mp4", Path(folder) / "output.mp4"
+                )
+
+    @patch("src.media.validate_video")
+    @patch("src.media.run")
+    @patch("src.media.probe")
     @patch("src.media.hardware_h264_encoder", return_value="h264_nvenc")
     def test_bitrate_transcode_falls_back_to_cpu_when_hardware_encoder_fails(
         self, hardware_encoder, probe_video, run_ffmpeg, validate_video

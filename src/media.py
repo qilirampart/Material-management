@@ -18,6 +18,7 @@ class FFmpegCancelled(FFmpegError):
 
 MINIMUM_VIDEO_BITRATE_KBPS = 3500
 TARGET_UPLOAD_BITRATE_KBPS = 4200
+MAXIMUM_UPLOAD_BITRATE_KBPS = 5000
 
 
 def minimum_dimension_reason(metadata, minimum_short_edge=720):
@@ -221,6 +222,9 @@ def transcode_for_upload_bitrate(
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
+    # The platform rejects bitrate-enhanced uploads above 5000 kbps.  Keep the
+    # requested target below that limit even when this helper is called directly.
+    target_kbps = min(int(target_kbps), MAXIMUM_UPLOAD_BITRATE_KBPS)
     if should_stop and should_stop():
         raise FFmpegCancelled("已停止码率提升")
     source_metadata = probe(source_path)
@@ -293,6 +297,11 @@ def transcode_for_upload_bitrate(
         if effective_video_bitrate_bps(metadata) <= minimum_kbps * 1000:
             raise FFmpegError(
                 f"转码后视频码率仍未超过 {minimum_kbps} kbps："
+                f"{effective_video_bitrate_bps(metadata) / 1000:.0f} kbps"
+            )
+        if effective_video_bitrate_bps(metadata) > MAXIMUM_UPLOAD_BITRATE_KBPS * 1000:
+            raise FFmpegError(
+                f"转码后视频码率超过 {MAXIMUM_UPLOAD_BITRATE_KBPS} kbps 上限："
                 f"{effective_video_bitrate_bps(metadata) / 1000:.0f} kbps"
             )
         return metadata
