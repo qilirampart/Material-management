@@ -152,6 +152,7 @@ def enhance_batch_bitrates(batch_folder, records, video_ids, progress=None, shou
         durable_records,
         video_ids,
         batch_folder / 'bitrate-enhanced',
+        rows=read_json(batch_folder / 'results.json', {}).get('input_rows', []),
         item_completed=persist_item,
         item_failed=record_failure,
         item_started=item_started,

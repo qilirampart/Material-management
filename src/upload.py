@@ -221,6 +221,7 @@ def enhance_selected_bitrates(
     records,
     video_ids,
     output_folder,
+    rows=None,
     item_completed=None,
     item_failed=None,
     item_started=None,
@@ -229,6 +230,10 @@ def enhance_selected_bitrates(
 ):
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
+    drama_by_video_id = {
+        str(row.get("video_id") or ""): str((row.get("source") or {}).get("剧名") or "").strip()
+        for row in (rows or [])
+    }
     enhanced = {}
     total = len(video_ids)
     for index, video_id in enumerate(video_ids, 1):
@@ -259,7 +264,9 @@ def enhance_selected_bitrates(
             or source_bitrate > MINIMUM_VIDEO_BITRATE_KBPS * 1000
         ):
             continue
-        target = output_folder / f"{safe_filename_part(video_id)}.mp4"
+        drama = safe_filename_part(drama_by_video_id.get(str(video_id), "")) or "未命名剧集"
+        target = output_folder / drama / f"{safe_filename_part(video_id)}.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
         try:
             stop_argument = {"should_stop": should_stop} if should_stop else {}
             if item_phase:

@@ -195,6 +195,25 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(updates["123"]["bitrate_enhanced_metadata"], metadata)
 
     @patch("src.upload.transcode_for_upload_bitrate")
+    def test_explicit_enhancement_groups_copies_by_drama(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"original-video")
+            transcode.side_effect = lambda _source, output: (Path(output).write_bytes(b"enhanced-video") or {"video_bitrate_bps": 4_200_000})
+            records = {"123": {"video_path": str(source), "metadata": {"video_bitrate_bps": 1_200_000}}}
+
+            updates = enhance_selected_bitrates(
+                records, ["123"], root / "enhanced",
+                rows=[{"video_id": "123", "source": {"剧名": "垃圾桶里捡到爹"}}],
+            )
+
+            self.assertEqual(
+                Path(updates["123"]["bitrate_enhanced_path"]),
+                root / "enhanced" / "垃圾桶里捡到爹" / "123.mp4",
+            )
+
+    @patch("src.upload.transcode_for_upload_bitrate")
     def test_explicit_enhancement_keeps_other_items_when_one_transcode_fails(self, transcode):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
