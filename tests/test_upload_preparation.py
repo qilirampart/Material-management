@@ -200,7 +200,11 @@ class UploadPreparationTests(unittest.TestCase):
             root = Path(folder)
             source = root / "downloaded.mp4"
             source.write_bytes(b"original-video")
-            transcode.side_effect = lambda _source, output: (Path(output).write_bytes(b"enhanced-video") or {"video_bitrate_bps": 4_200_000})
+            def create_grouped_copy(_source, output):
+                Path(output).write_bytes(b"enhanced-video")
+                return {"video_bitrate_bps": 4_200_000}
+
+            transcode.side_effect = create_grouped_copy
             records = {"123": {"video_path": str(source), "metadata": {"video_bitrate_bps": 1_200_000}}}
 
             updates = enhance_selected_bitrates(
@@ -210,7 +214,7 @@ class UploadPreparationTests(unittest.TestCase):
 
             self.assertEqual(
                 Path(updates["123"]["bitrate_enhanced_path"]),
-                root / "enhanced" / "垃圾桶里捡到爹" / "123.mp4",
+                (root / "enhanced" / "垃圾桶里捡到爹" / "123.mp4").resolve(),
             )
 
     @patch("src.upload.transcode_for_upload_bitrate")
