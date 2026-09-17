@@ -13,6 +13,7 @@ from pathlib import Path
 
 from src.media import (
     FFmpegCancelled,
+    MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
     MINIMUM_VIDEO_BITRATE_KBPS,
     effective_video_bitrate_bps,
     transcode_for_upload_bitrate,
@@ -33,6 +34,20 @@ FIXED_DEPARTMENTS = [
 
 _STAGING_LOCKS_GUARD = Lock()
 _STAGING_LOCKS: dict[str, Lock] = {}
+
+
+def upload_size_within_limit(path, metadata):
+    """Use persisted probe data when available, falling back to the file size."""
+    try:
+        size = int((metadata or {}).get("file_size_bytes") or 0)
+    except (AttributeError, TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        try:
+            size = Path(path).stat().st_size
+        except OSError:
+            return False
+    return size <= MAXIMUM_UPLOAD_FILE_SIZE_BYTES
 
 
 def _lock_for_staging_folder(target_folder: Path) -> Lock:
@@ -139,6 +154,7 @@ def build_upload_plan(
         use_enhanced = (
             enhanced.is_file()
             and effective_video_bitrate_bps(enhanced_metadata) > MINIMUM_VIDEO_BITRATE_KBPS * 1000
+            and upload_size_within_limit(enhanced, enhanced_metadata)
         )
         original = enhanced if use_enhanced else Path(record.get("video_path", ""))
         suffix = original.suffix.lower() or ".mp4"
@@ -247,6 +263,7 @@ def enhance_selected_bitrates(
         if (
             existing.is_file()
             and effective_video_bitrate_bps(existing_metadata) > MINIMUM_VIDEO_BITRATE_KBPS * 1000
+            and upload_size_within_limit(existing, existing_metadata)
         ):
             values = {
                 "bitrate_enhanced_path": str(existing.resolve()),

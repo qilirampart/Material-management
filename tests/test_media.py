@@ -6,18 +6,29 @@ from unittest.mock import patch
 from src.media import (
     FFmpegCancelled,
     FFmpegError,
+    MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
     describe_bitrate,
     describe_video,
     effective_video_bitrate_bps,
     extract_frames,
     preferred_hardware_h264_encoder,
     run,
+    target_bitrate_for_upload_size,
     transcode_for_upload_bitrate,
     validate_video,
 )
 
 
 class MediaTests(unittest.TestCase):
+    def test_upload_size_budget_reduces_target_bitrate_for_longer_video(self):
+        self.assertEqual(
+            target_bitrate_for_upload_size(1_000),
+            4_000,
+        )
+
+    def test_upload_size_budget_rejects_duration_that_cannot_fit_at_minimum_bitrate(self):
+        self.assertEqual(target_bitrate_for_upload_size(1_500), 0)
+
     @patch("src.media.subprocess.Popen")
     def test_cancellable_run_terminates_active_ffmpeg_immediately(self, popen):
         class Process:
@@ -96,6 +107,35 @@ class MediaTests(unittest.TestCase):
         command = run_ffmpeg.call_args.args[0]
         self.assertEqual(command[command.index("-b:v") + 1], "5000k")
         self.assertEqual(command[command.index("-maxrate") + 1], "5000k")
+
+    @patch("src.media.run")
+    @patch("src.media.probe", return_value={"duration": 1_500})
+    def test_bitrate_transcode_rejects_video_that_cannot_meet_size_and_bitrate_rules(
+        self, _probe_video, run_ffmpeg
+    ):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(FFmpegError, "文件大小"):
+                transcode_for_upload_bitrate(
+                    Path(folder) / "source.mp4", Path(folder) / "output.mp4"
+                )
+
+        run_ffmpeg.assert_not_called()
+
+    @patch("src.media.validate_video", return_value={
+        "video_bitrate_bps": 4_200_000,
+        "file_size_bytes": MAXIMUM_UPLOAD_FILE_SIZE_BYTES + 1,
+    })
+    @patch("src.media.run")
+    @patch("src.media.probe", return_value={"duration": 10})
+    @patch("src.media.hardware_h264_encoder", return_value=None)
+    def test_bitrate_transcode_rejects_output_exceeding_platform_size_limit(
+        self, _encoder, _probe_video, _run_ffmpeg, _validate_video
+    ):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(FFmpegError, "文件大小"):
+                transcode_for_upload_bitrate(
+                    Path(folder) / "source.mp4", Path(folder) / "output.mp4"
+                )
 
     @patch("src.media.validate_video", return_value={"video_bitrate_bps": 5_001_000})
     @patch("src.media.run")

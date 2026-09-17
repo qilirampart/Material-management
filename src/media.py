@@ -19,6 +19,37 @@ class FFmpegCancelled(FFmpegError):
 MINIMUM_VIDEO_BITRATE_KBPS = 3500
 TARGET_UPLOAD_BITRATE_KBPS = 4200
 MAXIMUM_UPLOAD_BITRATE_KBPS = 5000
+# The platform's error response reports a 522240 KB single-file ceiling.
+MAXIMUM_UPLOAD_FILE_SIZE_BYTES = 522_240 * 1024
+UPLOAD_SIZE_SAFETY_RATIO = 0.98
+UPLOAD_AUDIO_RESERVE_KBPS = 192
+
+
+def target_bitrate_for_upload_size(
+    duration_seconds,
+    *,
+    target_kbps=TARGET_UPLOAD_BITRATE_KBPS,
+    minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS,
+    maximum_size_bytes=MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
+    audio_reserve_kbps=UPLOAD_AUDIO_RESERVE_KBPS,
+):
+    """Return a video bitrate that leaves room for audio within the file limit.
+
+    Zero means that the duration cannot fit within the platform size limit even
+    at the required minimum video bitrate.
+    """
+    try:
+        duration = float(duration_seconds)
+    except (TypeError, ValueError):
+        duration = 0.0
+    target = min(int(target_kbps), MAXIMUM_UPLOAD_BITRATE_KBPS)
+    if duration <= 0:
+        return target
+    total_kbps = maximum_size_bytes * 8 / duration / 1000
+    available_video_kbps = int(total_kbps * UPLOAD_SIZE_SAFETY_RATIO - audio_reserve_kbps)
+    if available_video_kbps < minimum_kbps:
+        return 0
+    return min(target, available_video_kbps)
 
 
 def minimum_dimension_reason(metadata, minimum_short_edge=720):
@@ -228,6 +259,22 @@ def transcode_for_upload_bitrate(
     if should_stop and should_stop():
         raise FFmpegCancelled("已停止码率提升")
     source_metadata = probe(source_path)
+    size_limited_target_kbps = target_bitrate_for_upload_size(
+        source_metadata.get("duration"),
+        target_kbps=target_kbps,
+        minimum_kbps=minimum_kbps,
+    )
+    if not size_limited_target_kbps:
+        duration = float(source_metadata.get("duration") or 0)
+        estimated_minimum_size = round(
+            duration * (minimum_kbps + UPLOAD_AUDIO_RESERVE_KBPS) * 1000 / 8 / 1048576,
+            1,
+        )
+        raise FFmpegError(
+            f"文件大小限制：视频时长 {duration:.0f} 秒，即使按 {minimum_kbps} kbps 转码"
+            f"也预计约 {estimated_minimum_size} MB，超过平台 510 MB 上限"
+        )
+    target_kbps = size_limited_target_kbps
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
     timeout = max(600, round(source_metadata["duration"] * 6))
@@ -290,6 +337,8 @@ def transcode_for_upload_bitrate(
         metadata["transcode"] = {
             "video_encoder": encoder,
             "hardware_accelerated": hardware_accelerated,
+            "target_kbps": target_kbps,
+            "maximum_file_size_bytes": MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
             "encoding_seconds": round(encoding_seconds, 3),
             "validation_seconds": round(time.monotonic() - validating_started_at, 3),
             "total_seconds": round(time.monotonic() - started_at, 3),
@@ -303,6 +352,12 @@ def transcode_for_upload_bitrate(
             raise FFmpegError(
                 f"转码后视频码率超过 {MAXIMUM_UPLOAD_BITRATE_KBPS} kbps 上限："
                 f"{effective_video_bitrate_bps(metadata) / 1000:.0f} kbps"
+            )
+        file_size = int(_number(metadata.get("file_size_bytes")))
+        if file_size > MAXIMUM_UPLOAD_FILE_SIZE_BYTES:
+            raise FFmpegError(
+                f"文件大小超过平台上限：{file_size / 1048576:.1f} MB，"
+                f"最大允许 {MAXIMUM_UPLOAD_FILE_SIZE_BYTES / 1048576:.0f} MB"
             )
         return metadata
     except Exception:

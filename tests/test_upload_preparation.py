@@ -195,6 +195,35 @@ class UploadPreparationTests(unittest.TestCase):
             self.assertEqual(updates["123"]["bitrate_enhanced_metadata"], metadata)
 
     @patch("src.upload.transcode_for_upload_bitrate")
+    def test_explicit_enhancement_replaces_oversized_existing_copy(self, transcode):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"original-video")
+            oversized = root / "oversized.mp4"
+            oversized.write_bytes(b"old-copy")
+
+            def create_copy(_source, output):
+                Path(output).write_bytes(b"replacement")
+                return {"video_bitrate_bps": 4_000_000, "file_size_bytes": 100}
+
+            transcode.side_effect = create_copy
+            records = {"123": {
+                "video_path": str(source),
+                "metadata": {"video_bitrate_bps": 1_200_000},
+                "bitrate_enhanced_path": str(oversized),
+                "bitrate_enhanced_metadata": {
+                    "video_bitrate_bps": 4_200_000,
+                    "file_size_bytes": 600 * 1048576,
+                },
+            }}
+
+            updates = enhance_selected_bitrates(records, ["123"], root / "enhanced")
+
+            self.assertEqual(Path(updates["123"]["bitrate_enhanced_path"]).read_bytes(), b"replacement")
+            transcode.assert_called_once()
+
+    @patch("src.upload.transcode_for_upload_bitrate")
     def test_explicit_enhancement_groups_copies_by_drama(self, transcode):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
