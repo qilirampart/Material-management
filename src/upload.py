@@ -158,7 +158,12 @@ def build_upload_plan(
         )
         original = enhanced if use_enhanced else Path(record.get("video_path", ""))
         suffix = original.suffix.lower() or ".mp4"
-        name = f"{UPLOAD_NAME_PREFIX}-{drama_name}-{uploader_initials}-{upload_date:%y%m%d}-{sequence:02d}{suffix}"
+        prefix = UPLOAD_NAME_PREFIX
+        processing_mode = material.get('processing_mode') or record.get('processing_mode')
+        if processing_mode in {'micro', 'md5'}:
+            kind = '微创新' if processing_mode == 'micro' else '改md5'
+            prefix = f'APP-繁花-王俨-{kind}'
+        name = f"{prefix}-{drama_name}-{uploader_initials}-{upload_date:%y%m%d}-{sequence:02d}{suffix}"
         items.append({
             "video_id": material.get("video_id", ""),
             "original_path": str(original),

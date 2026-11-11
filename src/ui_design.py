@@ -32,7 +32,7 @@ QPushButton:hover { background:#E8F4F2; border-color:#78AAA8; }
 QPushButton:disabled { color:#95A0A5; background:#EEF1F3; }
 QPushButton#primary { background:#0F766E; color:white; border-color:#0F766E; }
 QPushButton#primary:disabled { background:#9EBFBA; border-color:#9EBFBA; }
-QLineEdit, QPlainTextEdit, QComboBox, QSpinBox { background:white; border:1px solid #D7E0E4; border-radius:5px; padding:7px; selection-background-color:#D2EAE5; }
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox { background:white; border:1px solid #D7E0E4; border-radius:5px; padding:7px; selection-background-color:#D2EAE5; }
 QTableWidget { background:white; alternate-background-color:#FAFCFC; border:0; gridline-color:#EBF0F2; selection-background-color:#E6F3F0; selection-color:#143F3B; }
 QHeaderView::section { background:#F4F7F8; color:#53676F; border:0; padding:10px 6px; }
 QTableWidget::indicator, QCheckBox::indicator { width:17px; height:17px; }
