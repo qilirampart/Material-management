@@ -250,6 +250,11 @@ def transcode_for_upload_bitrate(
     minimum_kbps=MINIMUM_VIDEO_BITRATE_KBPS,
     progress=None,
     should_stop=None,
+    video_filter=None,
+    audio_filter=None,
+    clip_start=0,
+    clip_duration=None,
+    output_duration=None,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -259,8 +264,9 @@ def transcode_for_upload_bitrate(
     if should_stop and should_stop():
         raise FFmpegCancelled("已停止码率提升")
     source_metadata = probe(source_path)
+    budget_duration = output_duration if output_duration is not None else source_metadata.get("duration")
     size_limited_target_kbps = target_bitrate_for_upload_size(
-        source_metadata.get("duration"),
+        budget_duration,
         target_kbps=target_kbps,
         minimum_kbps=minimum_kbps,
     )
@@ -279,11 +285,17 @@ def transcode_for_upload_bitrate(
     output_path.unlink(missing_ok=True)
     timeout = max(600, round(source_metadata["duration"] * 6))
     def command_for(encoder):
-        command = [
-            "ffmpeg", "-y", "-v", "error", "-i", str(source_path),
-            "-map", "0:v:0", "-map", "0:a?",
-            "-c:v", encoder,
-        ]
+        command = ["ffmpeg", "-y", "-v", "error"]
+        if clip_start:
+            command += ["-ss", str(clip_start)]
+        if clip_duration is not None:
+            command += ["-t", str(clip_duration)]
+        command += ["-i", str(source_path)]
+        if video_filter:
+            command += ["-filter_complex", video_filter, "-map", "[outv]"]
+        else:
+            command += ["-map", "0:v:0"]
+        command += ["-map", "0:a:0?" if video_filter else "0:a?", "-c:v", encoder]
         if encoder == "libx264":
             command += ["-preset", "veryfast", "-pix_fmt", "yuv420p"]
         elif encoder == "h264_nvenc":
@@ -300,7 +312,11 @@ def transcode_for_upload_bitrate(
         ]
         if encoder == "libx264":
             command += ["-x264-params", "nal-hrd=cbr:filler=1"]
-        return command + ["-c:a", "copy", "-movflags", "+faststart", str(output_path)]
+        if audio_filter and source_metadata.get("audio"):
+            command += ["-af", audio_filter, "-c:a", "aac", "-b:a", "128k"]
+        else:
+            command += ["-c:a", "copy"]
+        return command + ["-movflags", "+faststart", str(output_path)]
 
     started_at = time.monotonic()
     encoder = hardware_h264_encoder() or "libx264"
