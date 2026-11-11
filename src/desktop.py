@@ -196,7 +196,6 @@ class MainWindow(QMainWindow):
         self.process = None
         self.batch_lock = None
         self.close_after = False
-        self.variant_dialog = None
         self.event_offset = 0
         self.last_worker_error = ""
         self.last_worker_event = {}
@@ -213,7 +212,7 @@ class MainWindow(QMainWindow):
         self.navigation = QListWidget()
         self.navigation.setObjectName("navigation")
         self.navigation.setFixedWidth(190)
-        self.navigation.addItems(["▤   素材任务", "◇   检测复核", "▦   平台工作台", "⚙   设置"])
+        self.navigation.addItems(["▤   素材任务", "◇   检测复核", "▦   平台工作台", "⚙   设置", "▣   素材再创作"])
         rail = QWidget()
         rail.setObjectName('rail')
         rail.setFixedWidth(190)
@@ -240,9 +239,12 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.settings)
         self.pages.addWidget(scroll)
+        from src.recreation_page import RecreationPage
+        self.recreation = RecreationPage(self.config, restore=restore)
+        self.add_page(self.recreation)
         self.navigation.currentRowChanged.connect(self.change_page)
         self.navigation.setCurrentRow(0)
-        self.statusBar().showMessage("就绪 · 导入需求表开始 · 内部平台上传尚未接入")
+        self.statusBar().showMessage("就绪 · 请选择工作流程")
         if restore and self.config.get('restore_batch', True):
             last = self.config.get("last_batch", "")
             if not last and (APP_DATA_ROOT / "output/pilot/results.json").exists():
@@ -388,8 +390,6 @@ class MainWindow(QMainWindow):
         self.export_button = button('导出结果', self.export)
         for w in [self.retry_button, self.recheck_button, self.export_button]:
             actions.addWidget(w)
-        self.variant_button = button('素材再加工', self.open_material_variants)
-        actions.addWidget(self.variant_button)
         actions.addStretch()
         box.addLayout(actions)
         self.summary = label('尚无素材')
@@ -636,52 +636,6 @@ class MainWindow(QMainWindow):
         if paths:
             self.add_candidates(local_files_to_rows(paths))
 
-    def open_material_variants(self):
-        if self.is_running() or self.has_active_background_tasks():
-            self.statusBar().showMessage('请先结束当前后台任务，再进行素材再加工。')
-            return
-        selected = set(self.selected_ids())
-        items = []
-        for row in self.rows:
-            path = self.records.get(row['video_id'], {}).get('video_path') or row.get('local_path')
-            if row['video_id'] in selected and path and Path(path).is_file():
-                items.append({'video_id': row['video_id'], 'path': path,
-                              'drama': row.get('source', {}).get('剧名', ''),
-                              'upload_drama_info': row.get('upload_drama_info', {})})
-        if not items:
-            self.statusBar().showMessage('请勾选已下载的视频；也可先添加本地视频再勾选。')
-            return
-        from src.variant_dialog import VariantDialog
-        root = (self.folder or Path(self.config['output_root'])) / 'material-variants'
-        dialog = VariantDialog(items, root, self)
-        self.variant_dialog = dialog
-        if dialog.exec():
-            self.add_generated_variants(dialog.outputs)
-        self.variant_dialog = None
-        dialog.deleteLater()
-
-    def add_generated_variants(self, outputs):
-        rows = []
-        for output in outputs:
-            row = local_files_to_rows([output['path']])[0]
-            row['source']['剧名'] = output['drama']
-            row['upload_drama_info'] = output.get('upload_drama_info', {})
-            row['processing_mode'] = output['mode']
-            row['variant_provenance'] = output
-            rows.append(row)
-            self.records[row['video_id']] = {
-                'video_path': output['path'], 'download': '已下载',
-                'metadata': output['metadata'], 'status': 'review_required',
-                'reason': '仅下载，未调用模型', 'processing_mode': output['mode'],
-                'variant_provenance': output,
-            }
-        if rows:
-            self.add_candidates(rows)
-            self.checked = {row['video_id'] for row in rows}
-            self.persist_candidate_rows()
-            self.refresh_table()
-            self.statusBar().showMessage(f'已加入 {len(rows)} 个成品，尚未检测；可预览、检测或进入平台工作台。')
-
     def open_download_folder(self):
         target = (self.folder / 'videos') if self.folder else Path(self.config['output_root'])
         target.mkdir(parents=True, exist_ok=True)
@@ -740,10 +694,9 @@ class MainWindow(QMainWindow):
 
     def active_background_tasks(self):
         tasks = [self.io_task, self.quality_task, self.bitrate_task]
-        if self.variant_dialog is not None:
-            tasks.append(self.variant_dialog.task)
         tasks.extend(self.settings.active_background_tasks())
         tasks.extend(self.platform.active_background_tasks())
+        tasks.extend(self.recreation.active_background_tasks())
         return [task for task in tasks if task is not None and task.isRunning()]
 
     def has_active_background_tasks(self):
@@ -755,7 +708,6 @@ class MainWindow(QMainWindow):
             self.mode, self.download_concurrency, self.minimum_resolution, self.bitrate_button, self.link_button, self.local_button, self.select_all_button,
             self.invert_button, self.clear_selection_button, self.remove_selection_button,
             self.undo_remove_button,
-            self.variant_button,
             self.selection_count, self.select_first_button, self.select_to_end_button,
         ]:
             control.setEnabled(not busy)

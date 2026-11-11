@@ -2,7 +2,7 @@
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QComboBox,
     QDoubleSpinBox, QSpinBox, QLineEdit, QCheckBox, QPlainTextEdit,
@@ -14,6 +14,7 @@ from src.material_variants import VariantOptions, generate_variants
 
 
 class VariantDialog(QDialog):
+    result_ready = Signal(object)
     def __init__(self, items, output_root, parent=None):
         super().__init__(parent)
         self.items = items
@@ -163,6 +164,7 @@ class VariantDialog(QDialog):
 
     def show_result(self, result):
         self.outputs.extend(result['outputs'])
+        self.result_ready.emit(result)
         if result['outputs']:
             self.preview_path = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)
