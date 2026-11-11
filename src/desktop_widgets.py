@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.paths import RESOURCE_ROOT, APP_RUNTIME_ROOT
-from src.browser_session import configure_persistent_profile, platform_browser_root
+from src.browser_session import shared_platform_profile
 from src.edge_cdp import (
     edge_target_ids,
     evaluate_edge_page,
@@ -463,9 +463,11 @@ class UploadConfigDialog(QDialog):
 
 
 class PlatformPage(QWidget):
-    def __init__(self, config):
+    def __init__(self, config, *, workflow='original'):
         super().__init__()
         self.config = config
+        self.workflow = workflow
+        self.upload_departments = ['客户端二组'] if workflow == 'recreation' else None
         self.browser = None
         self.materials = []
         self.batch_folder = None
@@ -510,8 +512,9 @@ class PlatformPage(QWidget):
         self.prepare_button = self.upload_config_dialog.generate_button
         self.refresh_upload_history()
         layout = QVBoxLayout(self)
-        layout.addWidget(title('平台工作台'))
-        layout.addWidget(label('在软件内登录公司平台，准备并上传检测通过的素材'))
+        layout.addWidget(title('再创作上传准备' if workflow == 'recreation' else '平台工作台'))
+        layout.addWidget(label('共用智投登录 · 本页只使用再创作成品' if workflow == 'recreation'
+                               else '在软件内登录公司平台，准备并上传检测通过的素材'))
         body = QHBoxLayout()
         browser_card, box = card()
         row = QHBoxLayout()
@@ -538,6 +541,8 @@ class PlatformPage(QWidget):
         box.addLayout(row)
         self.area = QVBoxLayout()
         self.empty = QLabel('▣\n\n打开公司素材平台\n\n首次使用请填写平台地址，打开后由您自行登录。\n\n登录状态保存在本机，平台要求重新验证时请再次登录。')
+        if workflow == 'recreation':
+            self.empty.setText('尚未打开智投\n\n点击“打开平台”，使用共用登录。')
         self.empty.setWordWrap(True)
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setObjectName('platformEmpty')
@@ -557,8 +562,10 @@ class PlatformPage(QWidget):
         self.material_list.setAlternatingRowColors(True)
         box.addWidget(self.material_list)
         box.addWidget(label('固定信息', 'section'))
-        box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · 按部门可见'))
-        box.addWidget(label('码率处理：请在素材任务中勾选低码率视频并主动提升'))
+        box.addWidget(label('视频 · 原创 · 张雯燕 · 短剧\n产品不限 · 付费 · '
+                            + ('客户端二组可见' if workflow == 'recreation' else '按部门可见')))
+        box.addWidget(label('请先在加工页生成并选择成品' if workflow == 'recreation'
+                            else '码率处理：请在素材任务中勾选低码率视频并主动提升'))
         self.read_selection_button = button('读取平台已选信息', self.read_platform_selection)
         self.read_selection_button.setEnabled(False)
         box.addWidget(self.read_selection_button)
@@ -1024,6 +1031,7 @@ class PlatformPage(QWidget):
             drama_platform_id=self.drama_id.currentText(),
             file_count=len(batch['items']),
             request_file_dialog=False,
+            departments=self.upload_departments,
         )
         if self.browser:
             self.browser.page().runJavaScript(
@@ -1084,6 +1092,10 @@ class PlatformPage(QWidget):
             '正在选择视频文件…'
             if attempt == 0 else f'文件控件已刷新，正在第 {attempt + 1} 次重试…'
         )
+        target_id = self.browser.page().devToolsId() if self.browser else None
+        if self.browser and not target_id:
+            self._edge_files_failed('无法确定当前浏览器页面，请刷新后重试。')
+            return
 
         def select_files():
             if self.browser:
@@ -1093,6 +1105,7 @@ class PlatformPage(QWidget):
                 ws_url = find_page_ws_url(
                     platform_url,
                     self.internal_browser_debug_port,
+                    target_id=target_id,
                 )
             else:
                 ws_url = self.edge_target_ws_url
@@ -1157,12 +1170,10 @@ class PlatformPage(QWidget):
                 'QTWEBENGINE_REMOTE_DEBUGGING',
                 str(self.internal_browser_debug_port),
             )
-            from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+            from PySide6.QtWebEngineCore import QWebEnginePage
             from PySide6.QtWebEngineWidgets import QWebEngineView
 
-            self.profile = QWebEngineProfile("company-platform", self)
-            folder = platform_browser_root(self.config)
-            configure_persistent_profile(self.profile, folder)
+            self.profile = shared_platform_profile(self.config)
             self.browser = QWebEngineView(self)
             self.upload_page = QWebEnginePage(self.profile, self.browser)
             self.browser.setPage(self.upload_page)

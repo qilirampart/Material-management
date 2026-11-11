@@ -83,12 +83,13 @@ def build_upload_file_input_script():
 })()"""
 
 
-def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count, request_file_dialog=True):
+def build_upload_form_script(*, director, drama_name, drama_platform_id, file_count, request_file_dialog=True,
+                             departments=None):
     payload = json.dumps({
         "director": str(director).strip(),
         "dramaName": str(drama_name).strip(),
         "dramaId": str(drama_platform_id).strip(),
-        "departments": FIXED_DEPARTMENTS,
+        "departments": FIXED_DEPARTMENTS if departments is None else list(departments),
         "fileCount": int(file_count),
         "requestFileDialog": bool(request_file_dialog),
     }, ensure_ascii=False)

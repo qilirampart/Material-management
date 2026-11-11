@@ -229,7 +229,7 @@ def edge_targets(port: int = 9222) -> list[dict]:
         return json.load(response)
 
 
-def find_page_ws_url(url_prefix: str, port: int, attempts: int = 20) -> str:
+def find_page_ws_url(url_prefix: str, port: int, attempts: int = 20, *, target_id=None) -> str:
     for _ in range(max(1, int(attempts))):
         try:
             targets = edge_targets(port)
@@ -240,6 +240,7 @@ def find_page_ws_url(url_prefix: str, port: int, attempts: int = 20) -> str:
             if item.get("type") == "page"
             and str(item.get("url", "")).startswith(str(url_prefix))
             and item.get("webSocketDebuggerUrl")
+            and (target_id is None or str(item.get('id')) == str(target_id))
         ]
         if matches:
             return str(matches[0]["webSocketDebuggerUrl"])

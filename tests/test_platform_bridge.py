@@ -11,6 +11,14 @@ from src.platform_bridge import (
 
 
 class PlatformBridgeTests(unittest.TestCase):
+    def test_recreation_departments_do_not_change_original_workflow(self):
+        recreation = build_upload_form_script(director='王俨', drama_name='测试剧',
+            drama_platform_id='4100', file_count=1, departments=['客户端二组'])
+        self.assertIn('"departments": ["客户端二组"]', recreation)
+        original = build_upload_form_script(director='王俨', drama_name='测试剧',
+            drama_platform_id='4100', file_count=1)
+        self.assertIn('IAP投放组', original)
+
     def test_qt_browser_result_is_json_serialized_and_parsed(self):
         script = "(() => ({ok:true, code:'READY'}))()"
 

@@ -13,6 +13,20 @@ from src.edge_cdp import (
 
 
 class EdgeCdpTests(unittest.TestCase):
+    @patch('src.edge_cdp.edge_targets')
+    def test_shared_login_does_not_select_other_workflows_same_url(self, targets):
+        targets.return_value = [
+            {'type': 'page', 'id': 'old', 'url': 'https://market.wuread.cn/market-admin/',
+             'webSocketDebuggerUrl': 'ws://original'},
+            {'type': 'page', 'id': 'new', 'url': 'https://market.wuread.cn/market-admin/',
+             'webSocketDebuggerUrl': 'ws://recreation'},
+        ]
+        self.assertEqual(find_page_ws_url('https://market.wuread.cn/market-admin/', 9233,
+                                         target_id='new'), 'ws://recreation')
+        with self.assertRaises(RuntimeError):
+            find_page_ws_url('https://market.wuread.cn/market-admin/', 9233,
+                             attempts=1, target_id='missing')
+
     @patch("src.edge_cdp.edge_targets")
     def test_finds_software_browser_page_by_platform_url(self, targets):
         targets.return_value = [

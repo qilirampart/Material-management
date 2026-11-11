@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -357,7 +357,8 @@ class PlatformUploadUiTests(unittest.TestCase):
                 "platform_url": "https://market.wuread.cn/market-admin/",
                 "internal_browser_debug_port": 9233,
             })
-            page.browser = object()
+            page.browser = MagicMock()
+            page.browser.page.return_value.devToolsId.return_value = 'software-page'
             batch = {"index": 1, "items": [{"upload_path": str(video)}]}
 
             page._platform_fill_finished(
@@ -370,7 +371,8 @@ class PlatformUploadUiTests(unittest.TestCase):
                     break
                 QTest.qWait(10)
 
-            find_page.assert_called_once_with("https://market.wuread.cn/market-admin/", 9233)
+            find_page.assert_called_once_with("https://market.wuread.cn/market-admin/", 9233,
+                                              target_id='software-page')
             set_files.assert_called_once()
             self.assertIn("upload.mp4", page.status.text())
             page.browser = None
