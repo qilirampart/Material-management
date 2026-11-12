@@ -261,6 +261,7 @@ def transcode_for_upload_bitrate(
     mute_audio=False,
     visual_inputs=None,
     auxiliary_start=0,
+    background_audio_start=None,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -306,7 +307,8 @@ def transcode_for_upload_bitrate(
         if image_overlay_path:
             command += ['-loop', '1', '-i', str(image_overlay_path)]
         if background_audio_path:
-            command += ['-stream_loop', '-1']+(['-ss',str(auxiliary_start)] if auxiliary_start else [])+['-i', str(background_audio_path)]
+            audio_start=auxiliary_start if background_audio_start is None else background_audio_start
+            command += ['-stream_loop', '-1']+(['-ss',str(audio_start)] if audio_start else [])+['-i', str(background_audio_path)]
         for path in visual_inputs:
             loop=['-loop','1'] if Path(path).suffix.lower() in {'.png','.jpg','.jpeg','.webp'} else ['-stream_loop','-1']
             seek=['-ss',str(auxiliary_start)] if auxiliary_start and loop[0]=='-stream_loop' else []
@@ -333,7 +335,7 @@ def transcode_for_upload_bitrate(
             "-bufsize", f"{target_kbps * 2}k",
         ]
         if encoder == "libx264":
-            command += ["-x264-params", "nal-hrd=cbr:filler=1"]
+            command += ["-x264-params", "nal-hrd=cbr:filler=1:vbv-init=1"]
         if mute_audio:
             command += ['-an']
         elif audio_output_label:
@@ -378,13 +380,27 @@ def transcode_for_upload_bitrate(
             output_path,
             **({"should_stop": should_stop} if should_stop else {}),
         ))
+        validation_seconds=time.monotonic()-validating_started_at
+        if hardware_accelerated and effective_video_bitrate_bps(metadata)<=minimum_kbps*1000:
+            # Very short/static hardware clips may omit enough CBR filler to miss the minimum.
+            # Software CBR adds filler; keep the same final upload checks instead of weakening them.
+            output_path.unlink(missing_ok=True)
+            encoder,hardware_accelerated='libx264',False
+            if progress:progress('encoding')
+            retry_started=time.monotonic()
+            run(command_for(encoder),timeout=timeout,**({'should_stop':should_stop} if should_stop else {}))
+            encoding_seconds+=time.monotonic()-retry_started
+            if progress:progress('validating')
+            retry_started=time.monotonic()
+            metadata=dict(validate_video(output_path,**({'should_stop':should_stop} if should_stop else {})))
+            validation_seconds+=time.monotonic()-retry_started
         metadata["transcode"] = {
             "video_encoder": encoder,
             "hardware_accelerated": hardware_accelerated,
             "target_kbps": target_kbps,
             "maximum_file_size_bytes": MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
             "encoding_seconds": round(encoding_seconds, 3),
-            "validation_seconds": round(time.monotonic() - validating_started_at, 3),
+            "validation_seconds": round(validation_seconds, 3),
             "total_seconds": round(time.monotonic() - started_at, 3),
         }
         if effective_video_bitrate_bps(metadata) <= minimum_kbps * 1000:

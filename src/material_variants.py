@@ -20,6 +20,7 @@ from src.media import (
     probe, run, transcode_for_upload_bitrate, validate_video,
 )
 from src.upload import safe_filename_part
+from src.text_tracks import normalize_track,timing_expression,motion_coordinates,SCROLLS
 
 
 class ClipSelectionProvider(Protocol):
@@ -97,6 +98,15 @@ class VariantOptions:
     random_seed: int = 1
     random_ranges: dict = field(default_factory=dict)
     resource_pools: dict = field(default_factory=dict)
+    text_tracks: list = field(default_factory=list)
+    watermark_start: float = 0
+    watermark_duration: float = 0
+    watermark_scroll: str = 'none'
+    watermark_scroll_speed: float = 60
+    music_delay: float = 0
+    music_duration: float = 0
+    music_fade_in: float = 0
+    music_fade_out: float = 0
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -135,6 +145,15 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            if not isinstance(self.text_tracks,list) or len(self.text_tracks)>6:
+                raise ValueError('最多添加 6 条文字轨')
+            for track in self.text_tracks:normalize_track(track)
+            for value in (self.watermark_start,self.watermark_duration,self.music_delay,self.music_duration,
+                          self.music_fade_in,self.music_fade_out):
+                if not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=86400:
+                    raise ValueError('文字、水印或音乐时段须为 0–86400 秒')
+            if self.watermark_scroll not in SCROLLS or not math.isfinite(self.watermark_scroll_speed) or not 10<=self.watermark_scroll_speed<=300:
+                raise ValueError('水印滚动参数无效')
             if self.zoom_mode not in {'none','in','out','pulse'}:
                 raise ValueError('动态缩放模式无效')
             for value,low,high in ((self.zoom_amount,0,.25),(self.zoom_period,1,60),
@@ -225,20 +244,46 @@ def _filter_path(path):
     return str(Path(path).resolve()).replace('\\', '/').replace(':', '\\:').replace("'", "'\\''")
 
 
-def _title_filter(text_path, options):
+def _font_file(name='default'):
+    windows=Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts'
+    preferred={'default':windows/'msyh.ttc','sans':windows/'simhei.ttf','serif':windows/'simsun.ttc'}
     candidates = [
-        Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts/msyh.ttc',
+        preferred[name],windows/'msyh.ttc',
         Path('/System/Library/Fonts/PingFang.ttc'),
         Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
     ]
     font = next((p for p in candidates if p.is_file()), None)
     if font is None:
         raise ValueError('未找到标题字体，请先关闭标题选项')
+    return font
+
+
+def _title_filter(text_path, options):
+    font=_font_file()
     x, y = _position(options.title_position, 'text_w', 'text_h')
     size = min(options.title_size, max(1, (options.output_width-64)//max(1, len(options.title))))
     return (f"drawtext=fontfile='{_filter_path(font)}':textfile='{_filter_path(text_path)}':"
             f"expansion=none:fontsize={size}:fontcolor=0x{options.title_color}:box=1:boxcolor=black@0.6:"
             f"boxborderw=12:x={x}:y={y}")
+
+
+def _track_filter(value,text_path,canvas_width,offset):
+    track=normalize_track(value)
+    x,y=_position(track['position'],'text_w','text_h')
+    if track['position']=='center':x,y='(w-text_w)/2','(h-text_h)/2'
+    if track['position']=='custom':x,y=f"(w-text_w)*{track['x']}",f"(h-text_h)*{track['y']}"
+    moving=motion_coordinates(track['scroll'],track['scroll_speed'],track['start'],offset,
+        track['loop'],'text_w','text_h','w','h')
+    x,y=moving[0] or x,moving[1] or y
+    longest=max(map(len,track['text'].splitlines()))
+    size=(track['font_size'] if track['scroll']!='none'
+          else min(track['font_size'],max(1,(canvas_width-64)//longest)))
+    return (f"drawtext=fontfile='{_filter_path(_font_file(track['font_name']))}':"
+        f"textfile='{_filter_path(text_path)}':expansion=none:fontsize={size}:"
+        f"fontcolor=0x{track['font_color']}@{track['opacity']}:borderw={track['outline']}:bordercolor=black:"
+        f"shadowx={track['shadow']}:shadowy={track['shadow']}:shadowcolor=black:"
+        f"box={int(track['box'])}:boxcolor=black@0.5:boxborderw=8:x='{x}':y='{y}':"
+        f"enable='{timing_expression(track['start'],track['duration'],offset)}'")
 
 
 def _position(position, width, height, canvas_w='w', canvas_h='h'):
@@ -247,7 +292,7 @@ def _position(position, width, height, canvas_w='w', canvas_h='h'):
     return x, y
 
 
-def build_video_filter(options, version=1, text_path=None, source_metadata=None, timeline_offset=0):
+def build_video_filter(options, version=1, text_path=None, source_metadata=None, timeline_offset=0,track_paths=None):
     meta = source_metadata or {}
     width, height = options.output_width, options.output_height
     fw, fh = int(width*options.foreground_scale)//2*2, int(height*options.foreground_scale)//2*2
@@ -312,20 +357,34 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
             f'[basepip][pip]overlay=(W-w)*{options.pip_x}:(H-h)*{options.pip_y}:shortest=1')
     if options.title and text_path:
         graph += ',' + _title_filter(text_path, options)
+    for track,path in zip(options.text_tracks,track_paths or []):
+        graph+=','+_track_filter(track,path,width,timeline_offset)
     if options.watermark_path:
         x, y = _position(options.watermark_position, 'overlay_w', 'overlay_h', 'main_w', 'main_h')
+        moving=motion_coordinates(options.watermark_scroll,options.watermark_scroll_speed,
+            options.watermark_start,timeline_offset,True,'overlay_w','overlay_h','main_w','main_h')
+        x,y=moving[0] or x,moving[1] or y
         graph += (f'[basev];[1:v]scale={int(width*options.watermark_scale)}:-1,format=rgba,'
-                  f'colorchannelmixer=aa={options.watermark_opacity}[wm];[basev][wm]overlay={x}:{y}:shortest=1')
+                  f"colorchannelmixer=aa={options.watermark_opacity}[wm];[basev][wm]overlay=x='{x}':y='{y}':shortest=1:"
+                  f"enable='{timing_expression(options.watermark_start,options.watermark_duration,timeline_offset)}'")
     return graph + ',format=yuv420p[outv]'
 
 
-def build_audio_graph(options, metadata, duration):
+def build_audio_graph(options, metadata, duration,*,timeline_offset=0,total_duration=None):
     original = f'asetpts=PTS-STARTPTS,atempo={options.speed},volume={options.original_volume}'
     if options.audio_mode not in {'mix', 'replace'}:
         return '', original, None
     music_index = extra_input_indexes(options)['music_path']
+    end=min(total_duration if total_duration is not None else duration,
+        options.music_delay+options.music_duration if options.music_duration else float('inf'))
+    time=f'(t+{timeline_offset})'
+    gain=f'{options.music_volume}*gte({time},{options.music_delay})*lt({time},{end})'
+    if options.music_fade_in:gain+=f'*clip(({time}-{options.music_delay})/{options.music_fade_in},0,1)'
+    if options.music_fade_out:gain+=f'*clip(({end}-{time})/{options.music_fade_out},0,1)'
+    delay=max(0,options.music_delay-timeline_offset)
     graph = (f';[{music_index}:a:0]atrim=duration={duration},asetpts=PTS-STARTPTS,'
-             f'volume={options.music_volume}[music]')
+             f"adelay={round(delay*1000)}:all=1,apad=whole_dur={duration},atrim=duration={duration},"
+             f"volume='{gain}':eval=frame[music]")
     if options.audio_mode == 'mix' and metadata.get('audio'):
         graph += f';[0:a:0]{original},atrim=duration={duration}[voice];[voice][music]amix=inputs=2:duration=longest:normalize=0[outa]'
     else:
@@ -334,24 +393,34 @@ def build_audio_graph(options, metadata, duration):
 
 
 def _render_micro(source, target, options, metadata, clip_start, clip_duration,
-                  *, version=1, progress=None, should_stop=None, timeline_offset=0):
+                  *, version=1, progress=None, should_stop=None, timeline_offset=0,text_context=None):
     with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
         text_path = Path(work) / 'title.txt'
         text_path.write_text(options.title, encoding='utf-8')
+        context={'文件名':Path(source).stem,'剧名':(text_context or {}).get('drama','未命名剧集')}
+        tracks=[];track_paths=[]
+        for i,value in enumerate(options.text_tracks):
+            track=normalize_track(value)
+            for key,replacement in context.items():track['text']=track['text'].replace('{'+key+'}',replacement)
+            track=normalize_track(track)
+            path=Path(work)/f'track-{i}.txt';path.write_text(track['text'],encoding='utf-8')
+            tracks.append(track);track_paths.append(path)
+        render_options=replace(options,text_tracks=tracks)
         duration = clip_duration / options.speed
-        audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration)
+        audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration,
+            timeline_offset=timeline_offset,total_duration=(metadata['duration']-options.trim_start-options.trim_end)/options.speed)
         return transcode_for_upload_bitrate(
-            source, target, video_filter=build_video_filter(options, version, text_path, metadata,timeline_offset) + audio_graph,
+            source, target, video_filter=build_video_filter(render_options, version, text_path, metadata,timeline_offset,track_paths) + audio_graph,
             audio_filter=audio_filter, clip_start=clip_start, clip_duration=clip_duration,
             output_duration=duration, should_stop=should_stop, progress=progress,
             image_overlay_path=options.watermark_path or None,
             background_audio_path=options.music_path if options.audio_mode in {'mix', 'replace'} else None,
             audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute',
             visual_inputs=[getattr(options,k) for k in ('background_path','pip_path') if getattr(options,k)],
-            auxiliary_start=timeline_offset)
+            auxiliary_start=timeline_offset,background_audio_start=max(0,timeline_offset-options.music_delay))
 
 
-def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None):
+def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None,text_context=None):
     """Render a bounded excerpt with the production filters, without registering a product."""
     options.validate()
     requested=asdict(options)
@@ -367,7 +436,7 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
         raise ValueError('预览起点已接近或超出裁剪后的片尾，请减小起点')
     result = _render_micro(source, target, options, metadata, clip_start, clip_duration,
                            progress=progress, should_stop=should_stop,
-                           timeline_offset=(clip_start-options.trim_start)/options.speed)
+                           timeline_offset=(clip_start-options.trim_start)/options.speed,text_context=text_context)
     return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start,
             'resolved_options':asdict(options),'requested_options':requested,
             'source_path':str(Path(source).resolve())}
@@ -426,6 +495,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                         raise ValueError('去头尾后不足 0.5 秒，请减少裁剪时长')
                     metadata = _render_micro(source, target, resolved, source_metadata,
                         resolved.trim_start, clip_duration, version=1 if options.randomize else version, should_stop=should_stop,
+                        text_context=item,
                         progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
                                                          'video_id': item['video_id']})) if progress else None)
                 output_md5 = file_md5(target, should_stop)

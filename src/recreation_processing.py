@@ -181,6 +181,7 @@ class ProcessingWorkbench(QWidget):
                 try:
                     result = render_micro_preview(items[0]['path'], preview_target, options,
                         start=preview_start, seconds=preview_seconds, should_stop=self.stop_event.is_set,
+                        text_context=items[0],
                         progress=lambda phase: task.progress.emit({'phase': phase, 'index': 1,
                             'total': 1, 'video_id': '效果预览'}))
                 except FFmpegCancelled:

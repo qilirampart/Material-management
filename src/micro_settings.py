@@ -1,7 +1,9 @@
 """Composable micro-innovation controls; every enabled control maps to VariantOptions."""
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget,
-    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QInputDialog, QMessageBox)
+    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QInputDialog, QMessageBox,QDialog)
 from pathlib import Path
+from copy import deepcopy
+from src.text_tracks_dialog import TextTracksDialog
 from src.variant_dialog import VariantDialog
 from src.ui_design import label, btn
 from src.micro_presets import RECOMMENDED_NAME, RECOMMENDED, read_presets, write_presets, validate_settings
@@ -116,7 +118,10 @@ class MicroSettings(QWidget):
         self.title = QLineEdit()
         self.title.setMaxLength(40)
         self.title.setPlaceholderText('可选，一行标题或角标')
-        watermark.addRow('文字',self.title)
+        watermark.addRow('快捷文字',self.title)
+        self.text_tracks=[]
+        self.tracks_button=btn('多文字轨（0）…',self.edit_text_tracks)
+        watermark.addRow(self.tracks_button)
         self.title_size = self.integer(16,64,28)
         watermark.addRow('字号',self.step(self.title_size,'字号'))
         positions=[('顶部居中','top'),('底部居中','bottom'),('左上角','top_left'),('右上角','top_right'),
@@ -127,6 +132,11 @@ class MicroSettings(QWidget):
         self.combo(watermark,'图片位置','watermark_position', [positions[3],positions[0],positions[1],positions[2],positions[4],positions[5]])
         self.number(watermark,'图片宽度占比','watermark_scale',5,50,15,' %',100,0,1)
         self.number(watermark,'图片不透明度','watermark_opacity',10,100,80,' %',100,0,5)
+        self.number(watermark,'水印开始时间','watermark_start',0,86400,0,' 秒',1,2,.1)
+        self.number(watermark,'持续（0=片尾）','watermark_duration',0,86400,0,' 秒',1,2,.1)
+        self.combo(watermark,'水印滚动','watermark_scroll',[('固定','none'),('向左','left'),('向右','right'),('向上','up'),('向下','down')])
+        self.number(watermark,'滚动速度','watermark_scroll_speed',10,300,60,' px/s',1,0,5)
+        watermark.addRow(label('文字轨与水印时段均从加工后视频 0 秒开始；快捷文字全程显示。'))
 
         audio = self.page('音频')
         self.audio_mode = self.combo(audio,'处理方式','audio_mode',[('保留原声','original'),('静音','mute'),
@@ -134,10 +144,15 @@ class MicroSettings(QWidget):
         self.music_path = self.file_picker(audio,'背景音乐','音频 (*.mp3 *.wav *.m4a *.aac *.flac *.ogg)')
         self.number(audio,'原声音量','original_volume',0,200,100,' %',100,0,5)
         self.number(audio,'音乐音量','music_volume',0,200,25,' %',100,0,5)
+        for title,key in [('音乐延迟','music_delay'),('持续（0=片尾）','music_duration'),
+                          ('音乐淡入','music_fade_in'),('音乐淡出','music_fade_out')]:
+            self.number(audio,title,key,0,86400,0,' 秒',1,2,.1)
         def audio_enabled():
             mode=self.audio_mode.currentData()
             self.music_path.parentWidget().setEnabled(mode in {'mix','replace'})
             self.fields['music_volume'].parentWidget().setEnabled(mode in {'mix','replace'})
+            for key in ('music_delay','music_duration','music_fade_in','music_fade_out'):
+                self.fields[key].parentWidget().setEnabled(mode in {'mix','replace'})
             self.fields['original_volume'].parentWidget().setEnabled(mode in {'mix','original'})
         self.audio_mode.currentIndexChanged.connect(audio_enabled)
         audio_enabled()
@@ -227,6 +242,8 @@ class MicroSettings(QWidget):
         self.watermark_path.setText(values['watermark_path']);self.music_path.setText(values['music_path'])
         self.drop_enabled.setChecked(values['drop_every']>0)
         self.drop_every.setValue(values['drop_every'] or 25)
+        self.text_tracks=deepcopy(values['text_tracks'])
+        self.tracks_button.setText(f'多文字轨（{len(self.text_tracks)}）…')
         self.background_path.setText(values['background_path']);self.pip_path.setText(values['pip_path'])
         self.randomize.setChecked(values['randomize']);self.random_seed.setValue(values['random_seed'])
         for key,(enabled,a,b) in self.range_widgets.items():
@@ -247,6 +264,13 @@ class MicroSettings(QWidget):
                  if values[key] and not Path(values[key]).is_file()]
         if missing:
             self.preset_status.setText('参数已应用；配乐或水印文件已移动，请重新选择。')
+
+    def edit_text_tracks(self):
+        dialog=TextTracksDialog(self.text_tracks,self)
+        if dialog.exec()==QDialog.DialogCode.Accepted:
+            self.text_tracks=deepcopy(dialog.tracks)
+            self.tracks_button.setText(f'多文字轨（{len(self.text_tracks)}）…')
+        dialog.deleteLater()
 
     def apply_recommended(self):
         self.preset_combo.setCurrentIndex(0)
@@ -343,6 +367,7 @@ class MicroSettings(QWidget):
             watermark_path=self.watermark_path.text().strip(),music_path=self.music_path.text().strip(),
             drop_every=self.drop_every.value() if self.drop_enabled.isChecked() else 0)
         values.update(background_path=self.background_path.text().strip(),pip_path=self.pip_path.text().strip(),
+            text_tracks=deepcopy(self.text_tracks),
             randomize=self.randomize.isChecked(),random_seed=self.random_seed.value(),
             random_ranges={key:[a.value(),b.value()] for key,(enabled,a,b) in self.range_widgets.items() if enabled.isChecked()},
             resource_pools={key:w.text().strip() for key,w in self.pool_widgets.items() if w.text().strip()})

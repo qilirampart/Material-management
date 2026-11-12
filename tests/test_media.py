@@ -20,6 +20,17 @@ from src.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch('src.media.hardware_h264_encoder',return_value='h264_nvenc')
+    @patch('src.media.probe',return_value={'duration':1})
+    @patch('src.media.run')
+    @patch('src.media.validate_video',side_effect=[{'video_bitrate_bps':3360000},{'video_bitrate_bps':4200000}])
+    def test_short_hardware_output_below_minimum_is_reencoded_once_with_cpu(self,validate,run_ffmpeg,probe,hardware):
+        with tempfile.TemporaryDirectory() as folder:
+            result=transcode_for_upload_bitrate(Path(folder)/'source.mp4',Path(folder)/'out.mp4')
+        self.assertEqual(run_ffmpeg.call_count,2)
+        self.assertIn('libx264',run_ffmpeg.call_args.args[0])
+        self.assertEqual(result['transcode']['video_encoder'],'libx264')
+
     def test_upload_size_budget_reduces_target_bitrate_for_longer_video(self):
         self.assertEqual(
             target_bitrate_for_upload_size(1_000),

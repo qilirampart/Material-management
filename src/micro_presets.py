@@ -8,7 +8,9 @@ from src.material_variants import VariantOptions, RESOURCE_TYPES
 
 SETTING_KEYS = set(asdict(VariantOptions())) - {'mode', 'uploader', 'variants'}
 LEGACY_KEYS=SETTING_KEYS-{'zoom_mode','zoom_amount','zoom_period','background_path','pip_path',
-    'pip_scale','pip_x','pip_y','pip_opacity','randomize','random_seed','random_ranges','resource_pools'}
+    'pip_scale','pip_x','pip_y','pip_opacity','randomize','random_seed','random_ranges','resource_pools',
+    'text_tracks','watermark_start','watermark_duration','watermark_scroll','watermark_scroll_speed',
+    'music_delay','music_duration','music_fade_in','music_fade_out'}
 RECOMMENDED_NAME = '推荐 · 明显变化'
 RECOMMENDED = {key: value for key, value in asdict(VariantOptions(
     foreground_scale=.8, vertical_position=.25, brightness=.02, contrast=1.12,
