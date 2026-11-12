@@ -84,7 +84,7 @@ class RecreationBatch:
         return batch
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, *, recover_interrupted=True):
         folder = Path(folder)
         state = json.loads((folder / 'recreation.json').read_text(encoding='utf-8'))
         if not isinstance(state, dict) or state.get('schema') != 1 or not all(isinstance(state.get(k), list)
@@ -104,7 +104,7 @@ class RecreationBatch:
         batch = cls(folder, state)
         interrupted = False
         for item in batch.state['sources']:
-            if item.get('download_status') == 'downloading':
+            if recover_interrupted and item.get('download_status') == 'downloading':
                 item.update(download_status='pending', path='')
                 interrupted = True
         if interrupted:

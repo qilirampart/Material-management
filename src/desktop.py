@@ -241,6 +241,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(scroll)
         from src.recreation_page import RecreationPage
         self.recreation = RecreationPage(self.config, restore=restore)
+        self.recreation.task_finished.connect(lambda: QTimer.singleShot(0, self.close) if self.close_after else None)
         self.add_page(self.recreation)
         self.navigation.currentRowChanged.connect(self.change_page)
         self.navigation.setCurrentRow(0)
@@ -1338,7 +1339,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.has_active_background_tasks():
-            if (
+            if self.recreation.collection_task and self.recreation.collection_task.isRunning():
+                self.close_after = True
+                self.recreation.stop_collection()
+                self.statusBar().showMessage('正在停止再创作采集或下载，保存进度后退出。')
+            elif (
                 self.bitrate_task and self.bitrate_task.isRunning()
                 and getattr(self.bitrate_task, 'supports_immediate_stop', False)
             ):

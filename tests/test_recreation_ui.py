@@ -11,6 +11,19 @@ from src.recreation_page import RecreationPage
 
 
 class RecreationUiTests(unittest.TestCase):
+    def test_changed_drama_input_does_not_silently_query_old_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')})
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            page.drama_input.setPlainText('4200-另一剧')
+            with patch.object(page, '_start_browser_task') as start:
+                page.query_materials()
+                start.assert_not_called()
+            self.assertIn('创建新批次', page.message.text())
+            page.close()
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -36,9 +49,26 @@ class RecreationUiTests(unittest.TestCase):
             self.assertNotEqual(page.platform.preferences_path, window.platform.preferences_path)
             self.assertEqual(page.platform.upload_departments, ['客户端二组'])
             self.assertIsNone(window.platform.upload_departments)
-            self.assertFalse(page.query_button.isEnabled())
+            self.assertTrue(page.query_button.isEnabled())
             self.assertFalse(hasattr(window, 'variant_button'))
             window.close()
+
+    def test_query_defaults_cover_history_and_current_download_state_is_not_reset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')})
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            self.assertEqual(page.date_start.date().toString('yyyy-MM-dd'), '2014-01-01')
+            page.batch.record_page(page.batch.state['dramas'][0], [{'id': '1', 'name': '二创'}], 1)
+            page.batch.begin_download('4100_1')
+            page._sync_collection_state()
+            self.assertEqual(page.batch.state['sources'][0]['download_status'], 'downloading')
+            page._set_collection_busy(True)
+            self.assertFalse(page.query_button.isEnabled())
+            self.assertTrue(page.stop_button.isEnabled())
+            page._set_collection_busy(False)
+            page.close()
 
     def test_upload_preparation_is_per_drama_and_does_not_change_original_upload(self):
         with tempfile.TemporaryDirectory() as folder:
