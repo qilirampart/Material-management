@@ -1,5 +1,6 @@
 """Independent MD5/micro workbenches using the existing video pipeline."""
 import threading
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from PySide6.QtCore import Signal
@@ -9,7 +10,9 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, Q
 from src.ui_design import card, label, btn, Background
 from src.desktop_widgets import local_open
 from src.variant_dialog import VariantDialog
-from src.material_variants import VariantOptions, generate_variants
+from src.material_variants import VariantOptions, generate_variants, render_micro_preview
+from src.micro_preview import MicroPreviewDialog
+from src.media import FFmpegCancelled, FFmpegError
 from src.recreation import RecreationBatch
 from src.micro_settings import MicroSettings
 
@@ -23,6 +26,7 @@ class ProcessingWorkbench(QWidget):
         self.task, self.busy = None, False
         self.stop_event = threading.Event()
         self.items, self.last_output = [], ''
+        self.preview_cache, self.preview_dialog = None, None
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         main, box = card('视频列表')
@@ -80,8 +84,21 @@ class ProcessingWorkbench(QWidget):
             fields.addWidget(label('输出尺寸按画面设置 · 视频 >3500 且 ≤5000 kbps · 文件 ≤510 MB'))
         fields.addStretch()
         self.sample_button = btn('生成一条样片', lambda: self.start(sample=True))
+        self.effect_button = btn('预览当前效果', lambda: self.start(preview=True))
+        self.effect_button.setToolTip('按当前参数处理第一条勾选视频的短片段，不加入正式成品库。')
         if mode == 'micro':
+            preview_form = QFormLayout()
+            self.preview_start = VariantDialog._decimal(0, 86400, 0, ' 秒')
+            self.preview_length = QSpinBox()
+            self.preview_length.setRange(1, 30)
+            self.preview_length.setValue(10)
+            self.preview_length.setSuffix(' 秒')
+            preview_form.addRow('原片预览起点', VariantDialog._stepper(self.preview_start, '原片预览起点'))
+            preview_form.addRow('预览时长', VariantDialog._stepper(self.preview_length, '预览时长'))
+            fields.insertLayout(0, preview_form)
+            right.addWidget(self.effect_button)
             right.addWidget(self.sample_button)
+            self.sample_button.setText('生成完整样片（进入成品库）')
         self.start_button = btn('处理勾选视频' if mode == 'md5' else '批量处理勾选视频', self.start, True)
         right.addWidget(self.start_button)
         self.stop_button = btn('停止处理', self.stop)
@@ -123,25 +140,44 @@ class ProcessingWorkbench(QWidget):
         return VariantOptions(mode=self.mode, uploader=self.uploader.text().strip(),
             variants=1 if sample else self.count.value(), **values).validate()
 
-    def start(self, checked=False, *, sample=False):
+    def start(self, checked=False, *, sample=False, preview=False):
         if self.owner.work_in_progress():
             self.status.setText('请先完成当前任务')
             return
         items = [self.items[i] for i in self.owner.checked_rows(self.table)]
         try:
-            options = self.options(sample)
-            if not options.uploader:
+            options = self.options(sample or preview)
+            if not preview and not options.uploader:
                 raise ValueError('请填写上传人缩写')
             if not items or any(not x.get('path') or not Path(x['path']).is_file() for x in items):
                 raise ValueError('请勾选本地可用的视频；缺失文件需重新下载')
         except ValueError as exc:
             self.status.setText(str(exc))
             return
-        if sample:
+        if sample or preview:
             items = items[:1]
+        if preview:
+            if self.preview_dialog:
+                self.preview_dialog.reject()
+            if self.preview_cache:
+                self.preview_cache.cleanup()
+            self.preview_cache = tempfile.TemporaryDirectory(prefix='dz-effect-preview-')
+            preview_target = Path(self.preview_cache.name) / 'preview.mp4'
+            preview_start, preview_seconds = self.preview_start.value(), self.preview_length.value()
         self.stop_event.clear()
         task = None
         def execute():
+            if preview:
+                try:
+                    result = render_micro_preview(items[0]['path'], preview_target, options,
+                        start=preview_start, seconds=preview_seconds, should_stop=self.stop_event.is_set,
+                        progress=lambda phase: task.progress.emit({'phase': phase, 'index': 1,
+                            'total': 1, 'video_id': '效果预览'}))
+                except FFmpegCancelled:
+                    return {'preview_error': '已停止预览；原片及设置保留。'}
+                except (ValueError, FFmpegError) as exc:
+                    return {'preview_error': '预览失败：' + str(exc)[-600:]}
+                return {'preview': result}
             groups = defaultdict(list)
             for item in items:
                 groups[item['batch_folder']].append(item)
@@ -163,7 +199,7 @@ class ProcessingWorkbench(QWidget):
         task.failed.connect(self.status.setText)
         task.finished.connect(self.finish)
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
-                        self.import_button, self.remove_button):
+                        self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.bar.setRange(0, 0)
@@ -175,6 +211,18 @@ class ProcessingWorkbench(QWidget):
                                'completed': '完成', 'failed': '失败'}.get(event['phase'], event['phase']))
 
     def show_result(self, result):
+        if 'preview_error' in result:
+            self.status.setText(result['preview_error'])
+            return
+        if 'preview' in result:
+            self.status.setText('效果预览已生成；未加入成品库，可继续调整或批量生成。')
+            self.preview_dialog = MicroPreviewDialog(result['preview'], self)
+            cache = self.preview_cache
+            self.preview_dialog.finished.connect(lambda: cache.cleanup())
+            self.preview_dialog.setModal(True)
+            self.preview_dialog.show()
+            self.preview_dialog.player.play()
+            return
         self.status.setText(f"完成 {len(result['outputs'])} 个 · 失败 {len(result['failed'])} 个"
                             + (' · 已停止' if result['stopped'] else ' · 已保存到来源批次'))
         if result['outputs']:
@@ -185,7 +233,7 @@ class ProcessingWorkbench(QWidget):
     def finish(self):
         self.busy = False
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
-                        self.import_button, self.remove_button):
+                        self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.bar.setRange(0, 1)

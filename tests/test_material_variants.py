@@ -8,6 +8,22 @@ from src.media import FFmpegCancelled, probe, run
 
 
 class MaterialVariantTests(unittest.TestCase):
+    def test_preview_is_short_uses_current_effects_and_does_not_create_products(self):
+        from src.material_variants import render_micro_preview
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root/'source.mp4'
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=30:duration=5',
+                 '-c:v','libx264',str(source)])
+            result = render_micro_preview(source, root/'preview.mp4',
+                VariantOptions(output_width=1280,output_height=720,audio_mode='mute'), start=1, seconds=2)
+            self.assertEqual((result['metadata']['width'],result['metadata']['height']),(1280,720))
+            self.assertAlmostEqual(result['metadata']['duration'],2,delta=.15)
+            self.assertEqual(result['clip_start'],1)
+            self.assertFalse(list(root.rglob('manifest.json')))
+            with self.assertRaises(ValueError):
+                render_micro_preview(source, root/'bad.mp4', VariantOptions(), start=10)
+
     def test_extended_micro_filters_watermark_music_mask_and_mute_render_real_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -194,6 +194,50 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(page.output_table.rowCount(), 1)
             page.close()
 
+    def test_effect_preview_plays_without_registering_product_or_requiring_uploader(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            source = Path(folder)/'source.mp4'
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=30:duration=4',
+                 '-c:v','libx264',str(source)])
+            page.batch.add_local_sources([str(source)],page.batch.state['dramas'][0])
+            identity = page.batch.state['sources'][0]['video_id']
+            page.complete_processing_import('micro',str(page.batch.folder),[identity])
+            panel = page.micro
+            page.set_checked(panel.table,'all')
+            panel.preview_length.setValue(2)
+            panel.preview_start.setValue(1)
+            panel.micro_settings.mirror.setChecked(True)
+            panel.start(preview=True)
+            deadline = time.monotonic()+20
+            while panel.busy and time.monotonic()<deadline:
+                self.app.processEvents()
+                time.sleep(.01)
+            self.assertFalse(panel.busy)
+            self.assertIsNotNone(panel.preview_dialog,panel.status.text())
+            self.assertEqual(RecreationBatch.load(page.batch.folder).state['outputs'],[])
+            self.assertEqual(page.catalog,[])
+            self.assertTrue(panel.micro_settings.mirror.isChecked())
+            self.assertTrue(panel.effect_button.isEnabled())
+            self.assertTrue(panel.preview_dialog.player.source().isLocalFile())
+            cache = Path(panel.preview_cache.name)
+            self.assertTrue((cache/'preview.mp4').is_file())
+            panel.preview_dialog.accept()
+            self.assertIsNone(panel.preview_dialog.player)
+            self.assertFalse(cache.exists())
+            panel.preview_start.setValue(100)
+            panel.start(preview=True)
+            deadline = time.monotonic()+10
+            while panel.busy and time.monotonic()<deadline:
+                self.app.processEvents()
+                time.sleep(.01)
+            self.assertIn('预览起点',panel.status.text())
+            self.assertEqual(RecreationBatch.load(page.batch.folder).state['outputs'],[])
+            panel.preview_cache.cleanup()
+            page.close()
+
     def test_upload_groups_do_not_mix_dramas_or_exceed_fifty(self):
         with tempfile.TemporaryDirectory() as folder:
             page = self.page(folder)

@@ -233,6 +233,39 @@ def build_audio_graph(options, metadata, duration):
     return graph, None, '[outa]'
 
 
+def _render_micro(source, target, options, metadata, clip_start, clip_duration,
+                  *, version=1, progress=None, should_stop=None):
+    with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
+        text_path = Path(work) / 'title.txt'
+        text_path.write_text(options.title, encoding='utf-8')
+        duration = clip_duration / options.speed
+        audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration)
+        return transcode_for_upload_bitrate(
+            source, target, video_filter=build_video_filter(options, version, text_path, metadata) + audio_graph,
+            audio_filter=audio_filter, clip_start=clip_start, clip_duration=clip_duration,
+            output_duration=duration, should_stop=should_stop, progress=progress,
+            image_overlay_path=options.watermark_path or None,
+            background_audio_path=options.music_path if options.audio_mode in {'mix', 'replace'} else None,
+            audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute')
+
+
+def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None):
+    """Render a bounded excerpt with the production filters, without registering a product."""
+    options.validate()
+    if options.mode != 'micro' or not math.isfinite(start) or start < 0 or not 1 <= seconds <= 30:
+        raise ValueError('预览起点须非负，时长须为 1–30 秒')
+    if Path(source).resolve() == Path(target).resolve():
+        raise ValueError('预览不能覆盖原片')
+    metadata = probe(source)
+    clip_start = max(options.trim_start, start)
+    clip_duration = min(seconds * options.speed, metadata['duration'] - options.trim_end - clip_start)
+    if clip_duration < .5:
+        raise ValueError('预览起点已接近或超出裁剪后的片尾，请减小起点')
+    result = _render_micro(source, target, options, metadata, clip_start, clip_duration,
+                           progress=progress, should_stop=should_stop)
+    return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start}
+
+
 def generate_variants(items, output_root, options, *, progress=None, should_stop=None):
     options.validate()
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
@@ -281,27 +314,10 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     clip_duration = source_metadata['duration'] - options.trim_start - options.trim_end
                     if clip_duration < 0.5:
                         raise ValueError('去头尾后不足 0.5 秒，请减少裁剪时长')
-                    with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
-                        text_path = Path(work) / 'title.txt'
-                        text_path.write_text(options.title, encoding='utf-8')
-                        duration = clip_duration / options.speed
-                        audio_graph, audio_filter, audio_label = build_audio_graph(options, source_metadata, duration)
-                        extra = {}
-                        if options.watermark_path:
-                            extra['image_overlay_path'] = options.watermark_path
-                        if options.audio_mode in {'mix', 'replace'}:
-                            extra.update(background_audio_path=options.music_path, audio_output_label=audio_label)
-                        if options.audio_mode == 'mute':
-                            extra['mute_audio'] = True
-                        metadata = transcode_for_upload_bitrate(
-                            source, target, video_filter=build_video_filter(options, version, text_path, source_metadata) + audio_graph,
-                            audio_filter=audio_filter,
-                            clip_start=options.trim_start, clip_duration=clip_duration,
-                            output_duration=clip_duration / options.speed, should_stop=should_stop,
-                            **extra,
-                            progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
-                                                             'video_id': item['video_id']})) if progress else None,
-                        )
+                    metadata = _render_micro(source, target, options, source_metadata,
+                        options.trim_start, clip_duration, version=version, should_stop=should_stop,
+                        progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
+                                                         'video_id': item['video_id']})) if progress else None)
                 output_md5 = file_md5(target, should_stop)
                 if output_md5 == source_md5:
                     raise ValueError('输出与原文件 MD5 相同，请检查处理参数')
