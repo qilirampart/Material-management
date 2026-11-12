@@ -112,7 +112,10 @@ class VariantDialog(QDialog):
         row.setSpacing(5)
         row.addWidget(spin, 1)
         for text, action, callback in (('−', '减少', spin.stepDown), ('+', '增加', spin.stepUp)):
-            control = btn(text, callback)
+            def step(checked=False, change=callback):
+                change()
+                spin.lineEdit().deselect()
+            control = btn(text, step)
             control.setFixedWidth(36)
             control.setAccessibleName(action + name)
             control.setToolTip(action + name)

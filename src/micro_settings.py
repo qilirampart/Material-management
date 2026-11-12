@@ -1,15 +1,37 @@
 """Composable micro-innovation controls; every enabled control maps to VariantOptions."""
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget,
-    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog)
+    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QInputDialog, QMessageBox)
+from pathlib import Path
 from src.variant_dialog import VariantDialog
 from src.ui_design import label, btn
+from src.micro_presets import RECOMMENDED_NAME, RECOMMENDED, read_presets, write_presets, validate_settings
+from src.material_variants import VariantOptions
 
 
 class MicroSettings(QWidget):
-    def __init__(self):
+    def __init__(self, *, presets_path=None):
         super().__init__()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        self.presets_path = Path(presets_path) if presets_path is not None else None
+        self.presets = {}
+        self.preset_combo = QComboBox()
+        self.preset_combo.setToolTip('选择收藏即可应用全部创新参数；不改变视频列表。')
+        self.preset_combo.activated.connect(self.apply_selected_preset)
+        favorites = QHBoxLayout()
+        favorites.addWidget(self.preset_combo,1)
+        self.favorite_button = btn('收藏当前…',self.save_favorite)
+        self.favorite_button.setEnabled(self.presets_path is not None)
+        favorites.addWidget(self.favorite_button)
+        outer.addLayout(favorites)
+        actions = QHBoxLayout()
+        actions.addWidget(btn('恢复推荐',self.apply_recommended))
+        self.delete_favorite_button = btn('删除收藏',self.delete_favorite)
+        actions.addWidget(self.delete_favorite_button)
+        actions.addStretch()
+        outer.addLayout(actions)
+        self.preset_status = label('')
+        outer.addWidget(self.preset_status)
         self.tabs = QTabWidget()
         self.tabs.setMinimumHeight(350)
         outer.addWidget(self.tabs)
@@ -111,6 +133,91 @@ class MicroSettings(QWidget):
         self.mask_mode.currentIndexChanged.connect(mask_enabled)
         mask_enabled()
         region.addRow(label('以旋转、裁边后的前景画面为准；区域不能超出边界。模糊／遮挡不重建原画面。'))
+        try:
+            self.presets = read_presets(self.presets_path) if self.presets_path else {}
+        except (OSError,ValueError,TypeError) as exc:
+            self.preset_status.setText('收藏未读取：'+str(exc))
+        self.refresh_presets()
+        self.apply_settings(RECOMMENDED)
+        if not self.preset_status.text():
+            self.preset_status.setText('默认：前景 80% · 增强调色 · 1.06 倍速 · 保留原声')
+
+    def refresh_presets(self, selected=RECOMMENDED_NAME):
+        self.preset_combo.clear()
+        self.preset_combo.addItems([RECOMMENDED_NAME]+list(self.presets))
+        self.preset_combo.setCurrentText(selected)
+        self.delete_favorite_button.setEnabled(self.preset_combo.currentIndex()>0)
+
+    def apply_settings(self, values):
+        values=validate_settings(values)
+        size=(values['output_width'],values['output_height'])
+        index=next((i for i in range(self.resolution_preset.count())
+                    if self.resolution_preset.itemData(i)==size),self.resolution_preset.count()-1)
+        self.resolution_preset.setCurrentIndex(index)
+        self.width.setValue(size[0]);self.height.setValue(size[1])
+        for key,widget in self.fields.items():
+            if isinstance(widget,QComboBox):
+                widget.setCurrentIndex(widget.findData(values[key]))
+            else:
+                widget.setValue(values[key]*(widget.property('optionDivisor') or 1))
+        self.mirror.setChecked(values['mirror']);self.color.setChecked(values['color_adjust'])
+        self.title.setText(values['title']);self.title_size.setValue(values['title_size'])
+        self.watermark_path.setText(values['watermark_path']);self.music_path.setText(values['music_path'])
+        self.drop_enabled.setChecked(values['drop_every']>0)
+        self.drop_every.setValue(values['drop_every'] or 25)
+
+    def apply_selected_preset(self, *_):
+        if self.preset_combo.currentIndex()<0:
+            return
+        name=self.preset_combo.currentText()
+        self.apply_settings(RECOMMENDED if name==RECOMMENDED_NAME else self.presets[name])
+        self.preset_status.setText('已应用：'+name)
+        self.delete_favorite_button.setEnabled(name!=RECOMMENDED_NAME)
+        values=self.values()
+        missing=[values[key] for key in ('music_path','watermark_path')
+                 if values[key] and not Path(values[key]).is_file()]
+        if missing:
+            self.preset_status.setText('参数已应用；配乐或水印文件已移动，请重新选择。')
+
+    def apply_recommended(self):
+        self.preset_combo.setCurrentIndex(0)
+        self.apply_selected_preset()
+
+    def save_favorite(self):
+        name,ok=QInputDialog.getText(self,'收藏创新格式','给这套格式起个名字（最多 40 字）：')
+        if not ok:return
+        name=name.strip()
+        if not name or len(name)>40 or name==RECOMMENDED_NAME:
+            self.preset_status.setText('请输入 1–40 字的收藏名，不能使用推荐方案名称。')
+            return
+        try:
+            presets=read_presets(self.presets_path)
+            values=self.values()
+            VariantOptions(**values).validate()
+            if name in presets and QMessageBox.question(self,'覆盖收藏','已有同名收藏，是否替换？')!=QMessageBox.Yes:
+                return
+            presets[name]=values
+            write_presets(self.presets_path,presets)
+            self.presets=presets
+            self.refresh_presets(name)
+            self.preset_status.setText('已收藏：'+name)
+        except (OSError,ValueError,TypeError) as exc:
+            self.preset_status.setText('未能收藏：'+str(exc))
+
+    def delete_favorite(self):
+        name=self.preset_combo.currentText()
+        if name==RECOMMENDED_NAME:return
+        if QMessageBox.question(self,'删除收藏','删除收藏“'+name+'”？视频和当前参数不变。')!=QMessageBox.Yes:return
+        try:
+            presets=read_presets(self.presets_path)
+            presets.pop(name,None)
+            write_presets(self.presets_path,presets)
+            self.presets=presets;self.refresh_presets()
+            self.preset_combo.setCurrentIndex(-1)
+            self.preset_combo.setPlaceholderText('选择收藏以应用')
+            self.preset_status.setText('收藏已删除；当前参数保留。')
+        except (OSError,ValueError,TypeError) as exc:
+            self.preset_status.setText('未能删除收藏：'+str(exc))
 
     def page(self,name):
         page=QWidget()

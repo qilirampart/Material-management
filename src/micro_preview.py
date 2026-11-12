@@ -1,6 +1,6 @@
 """In-app playback for disposable micro-innovation excerpts."""
-from PySide6.QtCore import Qt, QUrl, QRect
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import Qt, QUrl, QRect, Signal
+from PySide6.QtGui import QImage, QPainter, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QSlider
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 from shiboken6 import delete
@@ -9,6 +9,8 @@ from src.ui_design import label, btn
 
 class PreviewSurface(QWidget):
     """Paint decoded frames inside Qt, including paused frames and mixed-DPI screens."""
+    double_clicked = Signal()
+
     def __init__(self):
         super().__init__()
         self.frame = QImage()
@@ -19,6 +21,11 @@ class PreviewSurface(QWidget):
         if frame.isValid():
             self.frame = frame.toImage()
             self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button()==Qt.LeftButton:
+            self.double_clicked.emit()
+            event.accept()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -41,6 +48,9 @@ class MicroPreviewDialog(QDialog):
         layout.addWidget(label(f"当前设置 · 原片 {result['clip_start']:.2f} 秒起 · "
                                f"预览 {meta['duration']:.1f} 秒 · {meta['width']}×{meta['height']}"))
         self.video = PreviewSurface()
+        self.video.double_clicked.connect(self.toggle_fullscreen)
+        self.fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)
+        self.fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
         self.video.setMinimumSize(240, 240)
         layout.addWidget(self.video, 1)
         self.player = QMediaPlayer(self)
@@ -59,6 +69,8 @@ class MicroPreviewDialog(QDialog):
         layout.addWidget(self.message)
         row = QHBoxLayout()
         row.addWidget(btn('播放 / 暂停', self.toggle))
+        self.fullscreen_button = btn('全屏播放（F11）',self.toggle_fullscreen)
+        row.addWidget(self.fullscreen_button)
         row.addStretch()
         row.addWidget(btn('返回调整', self.reject))
         row.addWidget(btn('效果满意，保留设置', self.accept, True))
@@ -72,6 +84,25 @@ class MicroPreviewDialog(QDialog):
             self.player.pause()
         else:
             self.player.play()
+
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self.restoreGeometry(self.normal_geometry)
+            if self.was_maximized:
+                self.showMaximized()
+            self.fullscreen_button.setText('全屏播放（F11）')
+        else:
+            self.normal_geometry=self.saveGeometry()
+            self.was_maximized=self.isMaximized()
+            self.showFullScreen()
+            self.fullscreen_button.setText('退出全屏（Esc）')
+
+    def reject(self):
+        if self.isFullScreen():
+            self.toggle_fullscreen()
+        else:
+            super().reject()
 
     def done(self, result):
         if self.player is not None:

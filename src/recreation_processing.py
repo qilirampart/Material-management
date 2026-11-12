@@ -64,7 +64,7 @@ class ProcessingWorkbench(QWidget):
         scroll.setWidget(self.options_widget)
         right.addWidget(scroll, 1)
         if mode == 'micro':
-            self.micro_settings = MicroSettings()
+            self.micro_settings = MicroSettings(presets_path=Path(owner.preferences_path).parent / 'micro-presets.json')
             fields.addWidget(self.micro_settings)
             for name in ('background','trim_start','trim_end','speed','color','title'):
                 setattr(self,name,getattr(self.micro_settings,name,None) or self.micro_settings.fields.get(name))
