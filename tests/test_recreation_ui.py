@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,11 +7,99 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate
 from src.desktop import MainWindow
 from src.recreation_page import RecreationPage
 
 
 class RecreationUiTests(unittest.TestCase):
+    def test_new_batch_does_not_keep_previous_progress_or_query_dates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-旧剧')
+            page.create_batch()
+            page.collection_status.setText('旧剧下载中')
+            page.collection_bar.setRange(0, 0)
+            page.date_start.setDate(QDate(2026, 11, 1))
+            page.drama_input.setPlainText('4200-新剧')
+            page.create_batch()
+            self.assertNotIn('旧剧', page.collection_status.text())
+            self.assertEqual(page.collection_bar.maximum(), 1)
+            self.assertEqual(page.collection_bar.value(), 0)
+            self.assertEqual(page.date_start.date(), QDate(2014, 1, 1))
+            page.close()
+
+    def test_invalid_startup_preferences_do_not_prevent_opening_workspace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prefs = Path(folder) / 'prefs.json'
+            for saved in ([], None, {'last_batch': 42}):
+                with self.subTest(saved=saved):
+                    prefs.write_text(json.dumps(saved), encoding='utf-8')
+                    page = RecreationPage({'output_root': folder, 'recreation_preferences_path': str(prefs)})
+                    self.assertIsNone(page.batch)
+                    self.assertIn('历史批次', page.message.text())
+                    self.assertEqual(json.loads(prefs.read_text(encoding='utf-8')), saved)
+                    page.close()
+
+    def test_preference_write_failure_does_not_leave_new_batch_with_old_view(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-旧剧')
+            page.create_batch()
+            old_folder = page.batch.folder
+            page.drama_input.setPlainText('4200-新剧')
+            with patch('src.recreation_page.save_json', side_effect=PermissionError('read only')):
+                page.create_batch()
+            self.assertNotEqual(page.batch.folder, old_folder)
+            self.assertIn(page.batch.folder.name, page.summary.text())
+            self.assertEqual(page.drama_selector.currentData(), '4200')
+            self.assertIn('历史批次', page.message.text())
+            self.assertTrue((page.batch.folder / 'recreation.json').is_file())
+            page.close()
+
+    def test_failed_state_refresh_retains_view_and_does_not_report_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            previous = page.batch
+            with patch('src.recreation_page.RecreationBatch.load', side_effect=PermissionError()):
+                page.collection_result({'count': 50})
+            self.assertIs(page.batch, previous)
+            self.assertIn('读取', page.message.text())
+            self.assertNotIn('已找到', page.message.text())
+            page.close()
+
+    def test_batch_switch_is_blocked_until_finished_signal_is_handled(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            previous = page.batch
+            page._set_collection_busy(True)
+            page.drama_input.setPlainText('4200-另一剧')
+            page.create_batch()
+            self.assertIs(page.batch, previous)
+            page.collection_finished()
+            page.create_batch()
+            self.assertEqual(page.batch.state['dramas'][0]['id'], '4200')
+            page.close()
+
+    def test_output_save_failure_has_manifest_recovery_location(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            with patch.object(page.batch, 'add_outputs', side_effect=PermissionError()):
+                page.receive_outputs({'outputs': [], 'manifest': str(Path(folder) / 'manifest.json')})
+            self.assertIn('manifest.json', page.message.text())
+            page.close()
+
     def test_refresh_keeps_selected_sources_and_retry_is_visible(self):
         with tempfile.TemporaryDirectory() as folder:
             page = RecreationPage({'output_root': folder,

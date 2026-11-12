@@ -32,6 +32,7 @@ class RecreationPage(QWidget):
         self.batch = None
         self.variant_dialog = None
         self.collection_task = None
+        self.collection_busy = False
         self.collection_stop = threading.Event()
         outer = QVBoxLayout(self)
         outer.addWidget(title('素材再创作'))
@@ -144,32 +145,46 @@ class RecreationPage(QWidget):
             tasks.append(self.variant_dialog.task)
         return tasks
 
+    def work_in_progress(self):
+        # Keep ownership until queued progress/result/finished callbacks have run,
+        # even if the worker thread has already returned.
+        return self.collection_busy or bool(self.active_background_tasks())
+
     def create_batch(self):
-        if self.active_background_tasks():
+        if self.work_in_progress():
             self.message.setText('请先完成当前任务')
             return
         try:
             self.batch = RecreationBatch.create(self.output_root, parse_dramas(self.drama_input.toPlainText()))
-            self.remember_batch()
             self.load_batch_view()
             self.message.setText('批次已创建，查询素材后可下载')
+            self.remember_batch()
         except (ValueError, OSError) as exc:
             self.message.setText(str(exc))
 
     def remember_batch(self):
-        self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
-        save_json(self.preferences_path, {'last_batch': str(self.batch.folder)})
+        try:
+            self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
+            save_json(self.preferences_path, {'last_batch': str(self.batch.folder)})
+        except OSError:
+            self.message.setText('批次可正常使用，但未能保存启动恢复设置；下次请通过“历史批次”打开：'
+                                 + str(self.batch.folder))
 
     def restore_last_batch(self):
         try:
             saved = json.loads(self.preferences_path.read_text(encoding='utf-8'))
+            if not isinstance(saved, dict) or not isinstance(saved.get('last_batch'), str) or not saved['last_batch'].strip():
+                raise ValueError('启动恢复设置无效')
             self.batch = RecreationBatch.load(saved['last_batch'])
+        except FileNotFoundError:
+            return
         except (OSError, ValueError, KeyError):
+            self.message.setText('未能恢复上次批次；请通过“历史批次”选择原目录，现有文件不变')
             return
         self.load_batch_view()
 
     def open_batch(self):
-        if self.active_background_tasks():
+        if self.work_in_progress():
             self.message.setText('请先完成当前任务')
             return
         folder = QFileDialog.getExistingDirectory(self, '打开再创作批次', str(self.output_root / '素材再创作'))
@@ -177,13 +192,18 @@ class RecreationPage(QWidget):
             return
         try:
             self.batch = RecreationBatch.load(folder)
-            self.remember_batch()
             self.load_batch_view()
+            self.message.setText('批次已打开')
+            self.remember_batch()
         except (ValueError, OSError) as exc:
             self.message.setText(str(exc))
 
     def load_batch_view(self):
         self.summary.setText('当前批次：' + self.batch.folder.name + ' · 独立于原素材任务')
+        self.collection_status.setText('查询“二创”与“精剪原片” · 默认覆盖历史上传日期')
+        self.collection_bar.setRange(0, 1)
+        self.collection_bar.setValue(0)
+        self.collection_bar.setFormat('%p%')
         self.drama_input.setPlainText('\n'.join(x['id'] + ('-' + x['name'] if x['name'] else '')
                                                for x in self.batch.state['dramas']))
         for selector in (self.drama_selector, self.upload_drama):
@@ -194,12 +214,14 @@ class RecreationPage(QWidget):
         self.refresh_outputs()
         self.platform.set_materials([], {}, {}, set(), self.batch.folder)
         dates = self.batch.state.get('query_dates', {})
+        self.date_start.setDate(QDate(2014, 1, 1))
+        self.date_end.setDate(QDate.currentDate())
         for key, edit in (('start', self.date_start), ('end', self.date_end)):
             if dates.get(key):
                 edit.setDate(QDate.fromString(dates[key], 'yyyy-MM-dd'))
 
     def query_materials(self):
-        if self.active_background_tasks():
+        if self.work_in_progress():
             self.message.setText('请先完成当前任务')
             return
         if not self.batch:
@@ -222,7 +244,7 @@ class RecreationPage(QWidget):
         self._start_browser_task('query', start_date=start, end_date=end)
 
     def start_downloads(self, selected_only):
-        if not self.batch or self.active_background_tasks():
+        if not self.batch or self.work_in_progress():
             return
         indices = {x.row() for x in self.source_table.selectionModel().selectedRows()}
         items = [x for i, x in enumerate(self.batch.state['sources']) if x.get('source_material_id')
@@ -279,19 +301,26 @@ class RecreationPage(QWidget):
         task.start()
 
     def _set_collection_busy(self, busy):
+        self.collection_busy = busy
         for control in (self.input_card, self.query_button, self.import_button, self.drama_selector,
                         self.download_button, self.download_selected_button, self.date_start, self.date_end):
             control.setEnabled(not busy)
         self.stop_button.setEnabled(busy)
 
     def _sync_collection_state(self):
-        self.batch = RecreationBatch.load(self.batch.folder, recover_interrupted=False)
+        try:
+            updated = RecreationBatch.load(self.batch.folder, recover_interrupted=False)
+        except (OSError, ValueError):
+            self.message.setText('批次记录读取失败，暂保留上次显示；请检查保存目录和文件权限后重新打开批次')
+            return False
+        self.batch = updated
         self.refresh_sources()
         for drama in self.batch.state['dramas']:
             for selector in (self.drama_selector, self.upload_drama):
                 index = selector.findData(drama['id'])
                 if index >= 0:
                     selector.setItemText(index, drama['id'] + ' · ' + drama['name'])
+        return True
 
     def show_collection_progress(self, event):
         phase = event['phase']
@@ -329,7 +358,8 @@ class RecreationPage(QWidget):
             self._sync_collection_state()
 
     def collection_result(self, result):
-        self._sync_collection_state()
+        if not self._sync_collection_state():
+            return
         if 'count' in result:
             message = f"已找到 {result['count']} 条素材，可以下载全部或选中项"
         else:
@@ -337,15 +367,17 @@ class RecreationPage(QWidget):
         self.message.setText(message + (' · 已停止' if result.get('stopped') else ''))
 
     def collection_failed(self, message):
-        self.message.setText(message)
-        self._sync_collection_state()
+        if self._sync_collection_state():
+            self.message.setText(message)
+        else:
+            self.message.setText(message + '；' + self.message.text())
 
     def collection_finished(self):
         self._set_collection_busy(False)
         self.collection_bar.setRange(0, 1)
         self.collection_bar.setValue(1)
         self.collection_bar.setFormat('本轮已结束')
-        self.collection_status.setText('本轮任务已结束；进度和文件已保留')
+        self.collection_status.setText('本轮任务已结束')
         self.task_finished.emit()
 
     def stop_collection(self):
@@ -359,6 +391,9 @@ class RecreationPage(QWidget):
             self.platform.open_platform()
 
     def import_sources(self):
+        if self.work_in_progress():
+            self.message.setText('请先完成当前任务')
+            return
         if not self.batch:
             self.message.setText('请先创建批次')
             return
@@ -404,7 +439,7 @@ class RecreationPage(QWidget):
                 self.output_table.setItem(index, column, QTableWidgetItem(value))
 
     def process_selected(self):
-        if not self.batch or self.active_background_tasks():
+        if not self.batch or self.work_in_progress():
             return
         indices = sorted({x.row() for x in self.source_table.selectionModel().selectedRows()})
         sources = [self.batch.state['sources'][i] for i in indices]
@@ -424,11 +459,15 @@ class RecreationPage(QWidget):
         self.tabs.setCurrentIndex(1)
 
     def receive_outputs(self, result):
-        self.batch.add_outputs(result['outputs'])
+        try:
+            self.batch.add_outputs(result['outputs'])
+        except OSError:
+            self.message.setText('成品已生成，但批次记录保存失败；请保留处理记录：'
+                                 + str(result.get('manifest') or self.batch.folder / '加工成品'))
         self.refresh_outputs()
 
     def prepare_upload(self):
-        if not self.batch:
+        if not self.batch or self.work_in_progress():
             return
         drama_id = self.upload_drama.currentData()
         indices = sorted({x.row() for x in self.output_table.selectionModel().selectedRows()})
