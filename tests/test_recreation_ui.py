@@ -11,6 +11,23 @@ from src.recreation_page import RecreationPage
 
 
 class RecreationUiTests(unittest.TestCase):
+    def test_refresh_keeps_selected_sources_and_retry_is_visible(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')})
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            page.batch.record_page(page.batch.state['dramas'][0], [{'id': '1', 'name': '二创'}], 1)
+            page.refresh_sources()
+            page.source_table.selectRow(0)
+            page._sync_collection_state()
+            self.assertEqual([x.row() for x in page.source_table.selectionModel().selectedRows()], [0])
+            page.show_collection_progress({'phase': 'downloading', 'video_id': '4100_1',
+                'index': 1, 'total': 1, 'drama': '测试剧', 'bytes': 0, 'size': 0,
+                'speed': 0, 'retry': 1})
+            self.assertIn('重试', page.collection_status.text())
+            page.close()
+
     def test_changed_drama_input_does_not_silently_query_old_batch(self):
         with tempfile.TemporaryDirectory() as folder:
             page = RecreationPage({'output_root': folder,

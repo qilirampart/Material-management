@@ -103,6 +103,9 @@ class RecreationBatch:
                 raise ValueError('批次成品信息不完整')
         batch = cls(folder, state)
         interrupted = False
+        if recover_interrupted and state.get('collection_status') == 'in_progress':
+            state['collection_status'] = 'paused'
+            interrupted = True
         for item in batch.state['sources']:
             if recover_interrupted and item.get('download_status') == 'downloading':
                 item.update(download_status='pending', path='')

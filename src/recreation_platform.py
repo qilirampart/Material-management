@@ -96,11 +96,14 @@ def parse_material_page(payload, drama_id, page, size=100):
         raise ValueError('平台未返回有效素材总数') from None
     if not isinstance(rows, list) or total < 0 or len(rows) > size:
         raise ValueError('平台分页数据异常')
-    if any(str(x.get('book_id')) != str(drama_id) or not re.fullmatch(r'\d+', str(x.get('id', '')))
+    if any(not isinstance(x, dict) or str(x.get('book_id')) != str(drama_id) or not re.fullmatch(r'\d+', str(x.get('id', '')))
            for x in rows):
         raise ValueError('返回素材与目标剧目不一致，已停止采集')
     if total < (page - 1) * size + len(rows):
         raise ValueError('素材数量在采集中发生变化，请重新查询')
+    expected = min(size, max(0, total - (page - 1) * size))
+    if len(rows) != expected or len({str(x['id']) for x in rows}) != len(rows):
+        raise ValueError('平台返回的分页不完整或重复，请重试；已读取内容保留')
     return {'items': rows, 'has_next': page * size < total, 'total': total}
 
 
@@ -244,33 +247,57 @@ def collect_platform_materials(batch, client, start_date, end_date, *, progress=
 
 def download_material(url, partial, *, progress=None, should_stop=None):
     validate_material_url(url)
+    for attempt in range(3):
+        if should_stop and should_stop():
+            raise RecreationStopped('下载已停止')
+        try:
+            return _download_material_once(url, partial, progress=progress, should_stop=should_stop)
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError,
+                _RetryableDownloadError):
+            if attempt == 2:
+                raise RecreationPlatformError('视频下载连接中断、超时或文件不完整，尝试 3 次后仍失败；已完成文件保留') from None
+            if progress:
+                progress({'retry': attempt + 1, 'bytes': 0, 'size': 0, 'speed': 0})
+            deadline = time.monotonic() + 2 * (attempt + 1)
+            while time.monotonic() < deadline:
+                if should_stop and should_stop():
+                    raise RecreationStopped('下载已停止')
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        except requests.RequestException:
+            raise RecreationPlatformError('视频下载请求失败，请重试；已完成文件保留') from None
+
+
+class _RetryableDownloadError(RuntimeError):
+    pass
+
+
+def _download_material_once(url, partial, *, progress=None, should_stop=None):
     started = time.monotonic()
     last_report = 0
     received = 0
-    try:
-        with requests.get(url, stream=True, allow_redirects=False, timeout=(10, 15)) as response:
-            if response.status_code != 200:
-                raise RecreationPlatformError(f'原始视频下载失败（HTTP {response.status_code}），请重试')
-            total = int(response.headers.get('content-length') or 0)
-            if total and shutil.disk_usage(Path(partial).parent).free < total + 64 * 1024 * 1024:
-                raise RecreationPlatformError('磁盘空间不足，请更换保存目录或释放空间')
-            with Path(partial).open('wb') as stream:
-                for chunk in response.iter_content(256 * 1024):
-                    if should_stop and should_stop():
-                        raise RecreationStopped('下载已停止')
-                    if not chunk:
-                        continue
-                    stream.write(chunk)
-                    received += len(chunk)
-                    now = time.monotonic()
-                    if progress and now - last_report >= 0.25:
-                        progress({'bytes': received, 'size': total,
-                                  'speed': received / max(0.001, now - started)})
-                        last_report = now
-            if not received or (total and received != total):
-                raise RecreationPlatformError('下载文件不完整，请重试')
-    except requests.RequestException:
-        raise RecreationPlatformError('视频下载连接中断或超时，请重试；已完成文件保留') from None
+    with requests.get(url, stream=True, allow_redirects=False, timeout=(10, 15)) as response:
+        if response.status_code in {408, 429, 500, 502, 503, 504}:
+            raise _RetryableDownloadError()
+        if response.status_code != 200:
+            raise RecreationPlatformError(f'原始视频下载失败（HTTP {response.status_code}），请重试')
+        total = int(response.headers.get('content-length') or 0)
+        if total and shutil.disk_usage(Path(partial).parent).free < total + 64 * 1024 * 1024:
+            raise RecreationPlatformError('磁盘空间不足，请更换保存目录或释放空间')
+        with Path(partial).open('wb') as stream:
+            for chunk in response.iter_content(256 * 1024):
+                if should_stop and should_stop():
+                    raise RecreationStopped('下载已停止')
+                if not chunk:
+                    continue
+                stream.write(chunk)
+                received += len(chunk)
+                now = time.monotonic()
+                if progress and now - last_report >= 0.25:
+                    progress({'bytes': received, 'size': total,
+                              'speed': received / max(0.001, now - started)})
+                    last_report = now
+        if not received or (total and received != total):
+            raise _RetryableDownloadError()
 
 
 def download_platform_materials(batch, client, identities=None, *, transfer=None, progress=None, should_stop=None):
@@ -290,12 +317,13 @@ def download_platform_materials(batch, client, identities=None, *, transfer=None
         try:
             if progress:
                 progress({**event, 'phase': 'resolving'})
-            url = client.source_url(item['source_material_id'])
             target = batch.download_target(item)
             if target.exists():
                 metadata = validate_video(target, should_stop=should_stop)
                 item.update(path=str(target.resolve()), metadata=metadata, download_status='downloaded')
+                item.pop('download_error', None)
             else:
+                url = client.source_url(item['source_material_id'])
                 partial = batch.begin_download(item['video_id'])
                 transfer(url, partial, should_stop=should_stop,
                          progress=(lambda info: progress({**event, 'phase': 'downloading', **info})) if progress else None)

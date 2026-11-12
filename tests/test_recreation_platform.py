@@ -1,11 +1,12 @@
 import tempfile
 import unittest
+import requests
 from pathlib import Path
 from unittest.mock import patch
 
 from src.recreation import RecreationBatch, RecreationStopped
 from src.recreation_platform import (
-    build_platform_job_script, collect_platform_materials, download_platform_materials,
+    build_platform_job_script, collect_platform_materials, download_platform_materials, download_material,
     parse_material_page, validate_material_url,
     PlatformMaterialClient, PlatformRateLimited,
 )
@@ -13,6 +14,55 @@ from src.media import run
 
 
 class RecreationPlatformTests(unittest.TestCase):
+    def test_download_retries_connection_failure_and_replaces_partial_bytes(self):
+        class Response:
+            status_code = 200
+            headers = {'content-length': '4'}
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def iter_content(self, size): yield b'done'
+        with tempfile.TemporaryDirectory() as folder:
+            partial = Path(folder) / 'video.mp4.part'
+            partial.write_bytes(b'old partial bytes')
+            with patch('src.recreation_platform.requests.get', side_effect=[requests.ConnectionError('private URL'), Response()]) as get, \
+                    patch('src.recreation_platform.time.sleep'):
+                download_material('https://material.wuread.cn/video', partial)
+            self.assertEqual(get.call_count, 2)
+            self.assertEqual(partial.read_bytes(), b'done')
+
+    def test_stop_during_retry_does_not_issue_another_request(self):
+        stopped = []
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('src.recreation_platform.requests.get', side_effect=requests.Timeout('private URL')) as get, \
+                patch('src.recreation_platform.time.sleep', side_effect=lambda _: stopped.append(True)):
+            with self.assertRaises(RecreationStopped):
+                download_material('https://material.wuread.cn/video', Path(folder) / 'video.part',
+                                  should_stop=lambda: bool(stopped))
+            self.assertEqual(get.call_count, 1)
+
+    def test_permanent_http_failure_is_not_retried_and_does_not_overwrite_partial(self):
+        class Response:
+            status_code = 403
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        with tempfile.TemporaryDirectory() as folder:
+            partial = Path(folder) / 'video.part'
+            partial.write_bytes(b'previous attempt')
+            with patch('src.recreation_platform.requests.get', return_value=Response()) as get:
+                with self.assertRaisesRegex(RuntimeError, 'HTTP 403'):
+                    download_material('https://material.wuread.cn/video', partial)
+                self.assertEqual(get.call_count, 1)
+            self.assertEqual(partial.read_bytes(), b'previous attempt')
+
+    def test_retry_exhaustion_is_bounded_and_does_not_disclose_url(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('src.recreation_platform.requests.get', side_effect=requests.Timeout('secret signed URL')) as get, \
+                patch('src.recreation_platform.time.monotonic', side_effect=range(0, 1000, 20)):
+            with self.assertRaisesRegex(RuntimeError, '3 次') as raised:
+                download_material('https://material.wuread.cn/video', Path(folder) / 'video.part')
+            self.assertNotIn('secret', str(raised.exception))
+            self.assertEqual(get.call_count, 3)
+
     def test_changing_dates_requires_new_batch_instead_of_mixing_query_results(self):
         with tempfile.TemporaryDirectory() as folder:
             batch = RecreationBatch.create(folder, [{'id': '4100', 'name': '测试剧'}])
@@ -30,12 +80,42 @@ class RecreationPlatformTests(unittest.TestCase):
             self.assertEqual(request.call_count, 2)
             self.assertIn(5, [call.args[0] for call in wait.call_args_list])
     def test_page_checks_query_identity_and_explicit_total(self):
-        payload = {'total': '101', 'rows': [{'id': '1', 'name': '二创', 'book_id': '4100'}]}
+        payload = {'total': '101', 'rows': [{'id': str(i), 'name': '二创', 'book_id': '4100'} for i in range(100)]}
         result = parse_material_page(payload, '4100', 1, 100)
         self.assertTrue(result['has_next'])
         for invalid in ({'rows': []}, {'total': 1, 'rows': [{'id': '1', 'name': '二创', 'book_id': '4200'}]}):
             with self.assertRaises(ValueError):
                 parse_material_page(invalid, '4100', 1, 100)
+
+    def test_short_or_duplicate_page_cannot_silently_skip_materials(self):
+        row = {'id': '1', 'name': '二创', 'book_id': '4100'}
+        for payload in ({'total': 101, 'rows': [row]},
+                        {'total': 2, 'rows': [row, row]}):
+            with self.assertRaises(ValueError):
+                parse_material_page(payload, '4100', 1)
+
+    def test_recover_existing_video_without_requesting_expired_platform_url(self):
+        with tempfile.TemporaryDirectory() as folder:
+            batch = RecreationBatch.create(folder, [{'id': '4100', 'name': '测试剧'}])
+            batch.record_page(batch.state['dramas'][0], [{'id': '1', 'name': '二创'}], 1)
+            item = batch.state['sources'][0]
+            target = batch.download_target(item)
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b'existing validated video')
+            with patch('src.recreation_platform.validate_video', return_value={'duration': 1}), \
+                    patch('src.recreation_platform.download_material') as transfer:
+                result = download_platform_materials(batch, object())
+            self.assertEqual(result['completed'], 1)
+            transfer.assert_not_called()
+            self.assertEqual(RecreationBatch.load(batch.folder).state['sources'][0]['path'], str(target.resolve()))
+
+    def test_reload_recovers_interrupted_query_but_read_only_snapshot_does_not(self):
+        with tempfile.TemporaryDirectory() as folder:
+            batch = RecreationBatch.create(folder, [{'id': '4100', 'name': '测试剧'}])
+            batch.state['collection_status'] = 'in_progress'
+            batch.save()
+            self.assertEqual(RecreationBatch.load(batch.folder, recover_interrupted=False).state['collection_status'], 'in_progress')
+            self.assertEqual(RecreationBatch.load(batch.folder).state['collection_status'], 'paused')
 
     def test_scripts_only_use_observed_read_endpoints_and_do_not_export_credentials(self):
         script = build_platform_job_script('job1', 'list', {

@@ -314,6 +314,8 @@ class RecreationPage(QWidget):
                 text += f" · {amount} MB · {event['speed'] / 1048576:.1f} MB/s"
                 self.collection_bar.setRange(0, 1000 if size else 0)
                 self.collection_bar.setValue(int(received / size * 1000) if size else 0)
+                if event.get('retry'):
+                    text = f"{event['index']} / {event['total']} · {event['drama']} · 连接中断，正在重试 {event['retry']} / 2…"
             else:
                 self.collection_bar.setRange(0, event['total'])
                 self.collection_bar.setValue(event['index'] if phase in {'downloaded', 'failed'} else event['index'] - 1)
