@@ -47,6 +47,10 @@ class MicroPreviewDialog(QDialog):
         meta = result['metadata']
         layout.addWidget(label(f"当前设置 · 原片 {result['clip_start']:.2f} 秒起 · "
                                f"预览 {meta['duration']:.1f} 秒 · {meta['width']}×{meta['height']}"))
+        if result.get('requested_options',{}).get('randomize'):
+            plan=result['resolved_options']
+            layout.addWidget(label(f"第 1 版 · 前景 {plan['foreground_scale']:.1%} · "
+                f"{plan['speed']:.3f} 倍速 · 种子 {plan['random_seed']}；当前设置不变时正式生成复用此版。"))
         self.video = PreviewSurface()
         self.video.double_clicked.connect(self.toggle_fullscreen)
         self.fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)

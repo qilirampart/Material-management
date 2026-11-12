@@ -210,6 +210,7 @@ class WorkflowTests(unittest.TestCase):
             panel.preview_length.setValue(2)
             panel.preview_start.setValue(1)
             panel.micro_settings.mirror.setChecked(True)
+            panel.micro_settings.randomize.setChecked(True)
             panel.start(preview=True)
             deadline = time.monotonic()+20
             while panel.busy and time.monotonic()<deadline:
@@ -227,6 +228,16 @@ class WorkflowTests(unittest.TestCase):
             panel.preview_dialog.accept()
             self.assertIsNone(panel.preview_dialog.player)
             self.assertFalse(cache.exists())
+            panel.uploader.setText('TEST');panel.count.setValue(2)
+            for change in (False,True):
+                if change:panel.micro_settings.fields['brightness'].setValue(.08)
+                with patch('src.recreation_processing.generate_variants',return_value={'outputs':[],'failed':[]}) as generate:
+                    panel.start()
+                    deadline=time.monotonic()+10
+                    while panel.busy and time.monotonic()<deadline:
+                        self.app.processEvents();time.sleep(.01)
+                frozen=generate.call_args.kwargs['resolved_plans']
+                self.assertEqual(len(frozen),0 if change else 1)
             panel.preview_start.setValue(100)
             panel.start(preview=True)
             deadline = time.monotonic()+10

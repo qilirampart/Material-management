@@ -99,9 +99,27 @@ class MicroSettingsTests(unittest.TestCase):
             self.assertNotIn('完整参数',other.presets)
             panel.close();other.close()
 
+    def test_composition_and_random_settings_round_trip_and_are_favoritable(self):
+        from src.micro_presets import RECOMMENDED
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'presets.json'
+            panel=MicroSettings(presets_path=path)
+            values=dict(RECOMMENDED,zoom_mode='pulse',zoom_amount=.12,zoom_period=4,
+                pip_scale=.3,pip_x=.5,pip_y=.75,pip_opacity=.7,randomize=True,random_seed=22,
+                random_ranges={'foreground_scale':[.6,.9],'speed':[1,1.1],'contrast':[1.1,1.3]},
+                resource_pools={'background_path':folder})
+            panel.apply_settings(values)
+            self.assertEqual(panel.values(),values)
+            with patch('src.micro_settings.QInputDialog.getText',return_value=('动态方案',True)):
+                panel.save_favorite()
+            other=MicroSettings(presets_path=path)
+            other.preset_combo.setCurrentText('动态方案');other.apply_selected_preset()
+            self.assertEqual(other.values(),values)
+            panel.close();other.close()
+
     def test_all_six_categories_have_valid_defaults_and_map_values(self):
         panel=MicroSettings()
-        self.assertEqual(panel.tabs.count(),6)
+        self.assertEqual(panel.tabs.count(),8)
         options=VariantOptions(**panel.values()).validate()
         self.assertEqual(options.output_width,720)
         self.assertEqual(options.audio_mode,'original')

@@ -3,10 +3,12 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 from src.batch import save_json
-from src.material_variants import VariantOptions
+from src.material_variants import VariantOptions, RESOURCE_TYPES
 
 
 SETTING_KEYS = set(asdict(VariantOptions())) - {'mode', 'uploader', 'variants'}
+LEGACY_KEYS=SETTING_KEYS-{'zoom_mode','zoom_amount','zoom_period','background_path','pip_path',
+    'pip_scale','pip_x','pip_y','pip_opacity','randomize','random_seed','random_ranges','resource_pools'}
 RECOMMENDED_NAME = '推荐 · 明显变化'
 RECOMMENDED = {key: value for key, value in asdict(VariantOptions(
     foreground_scale=.8, vertical_position=.25, brightness=.02, contrast=1.12,
@@ -15,14 +17,19 @@ RECOMMENDED = {key: value for key, value in asdict(VariantOptions(
 
 
 def validate_settings(settings):
-    if not isinstance(settings, dict) or set(settings) != SETTING_KEYS:
+    if not isinstance(settings, dict) or not LEGACY_KEYS<=set(settings)<=SETTING_KEYS:
         raise ValueError('收藏参数不完整或版本不兼容')
+    settings={**{k:v for k,v in asdict(VariantOptions()).items() if k in SETTING_KEYS},**settings}
+    if not isinstance(settings['resource_pools'],dict) or any(k not in RESOURCE_TYPES or not isinstance(v,str)
+            for k,v in settings['resource_pools'].items()):
+        raise ValueError('收藏资源池格式无效')
     # A moved music/image file must not prevent loading the user's other favorites.
-    values = dict(settings, watermark_path='', music_path='', audio_mode='original')
+    values = dict(settings, watermark_path='', music_path='', background_path='',pip_path='',
+        audio_mode='original',resource_pools={})
     VariantOptions(**values).validate()
     if settings['audio_mode'] not in {'original','mute','mix','replace'}:
         raise ValueError('收藏的音频模式无效')
-    if not all(isinstance(settings[k], str) for k in ('watermark_path','music_path')):
+    if not all(isinstance(settings[k], str) for k in ('watermark_path','music_path','background_path','pip_path')):
         raise ValueError('收藏文件路径无效')
     return dict(settings)
 
@@ -37,7 +44,7 @@ def read_presets(path):
     for name, settings in data['presets'].items():
         if not name.strip() or len(name)>40 or name == RECOMMENDED_NAME:
             raise ValueError('收藏名称不正确')
-        validate_settings(settings)
+        data['presets'][name]=validate_settings(settings)
     return data['presets']
 
 

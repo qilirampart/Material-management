@@ -3,6 +3,7 @@ import threading
 import tempfile
 from collections import defaultdict
 from pathlib import Path
+from dataclasses import asdict
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QLineEdit,
     QSpinBox, QScrollArea,
@@ -27,6 +28,7 @@ class ProcessingWorkbench(QWidget):
         self.stop_event = threading.Event()
         self.items, self.last_output = [], ''
         self.preview_cache, self.preview_dialog = None, None
+        self.preview_plan = None
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         main, box = card('视频列表')
@@ -85,7 +87,7 @@ class ProcessingWorkbench(QWidget):
         fields.addStretch()
         self.sample_button = btn('生成一条样片', lambda: self.start(sample=True))
         self.effect_button = btn('预览当前效果', lambda: self.start(preview=True))
-        self.effect_button.setToolTip('按当前参数处理第一条勾选视频的短片段，不加入正式成品库。')
+        self.effect_button.setToolTip('预览第一条勾选视频，默认 10 秒；起点与时长可在参数区底部调整。不加入成品库。')
         if mode == 'micro':
             preview_form = QFormLayout()
             self.preview_start = VariantDialog._decimal(0, 86400, 0, ' 秒')
@@ -95,7 +97,7 @@ class ProcessingWorkbench(QWidget):
             self.preview_length.setSuffix(' 秒')
             preview_form.addRow('原片预览起点', VariantDialog._stepper(self.preview_start, '原片预览起点'))
             preview_form.addRow('预览时长', VariantDialog._stepper(self.preview_length, '预览时长'))
-            fields.insertLayout(0, preview_form)
+            fields.insertLayout(fields.count()-1, preview_form)
             right.addWidget(self.effect_button)
             right.addWidget(self.sample_button)
             self.sample_button.setText('生成完整样片（进入成品库）')
@@ -156,9 +158,17 @@ class ProcessingWorkbench(QWidget):
             return
         if sample or preview:
             items = items[:1]
+        frozen_plans={}
+        if self.preview_plan and not preview and self.mode=='micro':
+            def effects(values):
+                return {k:v for k,v in values.items() if k not in {'uploader','variants'}}
+            if effects(asdict(options))==effects(self.preview_plan['requested_options']):
+                frozen_plans[(self.preview_plan['source_path'],1)]=VariantOptions(**self.preview_plan['resolved_options'])
         if preview:
             if self.preview_dialog:
-                self.preview_dialog.reject()
+                self.preview_dialog.done(0)
+                self.preview_dialog.deleteLater()
+                self.preview_dialog=None
             if self.preview_cache:
                 self.preview_cache.cleanup()
             self.preview_cache = tempfile.TemporaryDirectory(prefix='dz-effect-preview-')
@@ -186,7 +196,7 @@ class ProcessingWorkbench(QWidget):
                 if self.stop_event.is_set():
                     break
                 result = generate_variants(sources, Path(folder) / '加工成品', options,
-                    progress=task.progress.emit, should_stop=self.stop_event.is_set)
+                    progress=task.progress.emit, should_stop=self.stop_event.is_set,resolved_plans=frozen_plans)
                 batch = RecreationBatch.load(folder, recover_interrupted=False)
                 batch.add_outputs(result['outputs'])
                 outputs.extend(result['outputs'])
@@ -215,6 +225,7 @@ class ProcessingWorkbench(QWidget):
             self.status.setText(result['preview_error'])
             return
         if 'preview' in result:
+            self.preview_plan=result['preview']
             self.status.setText('效果预览已生成；未加入成品库，可继续调整或批量生成。')
             self.preview_dialog = MicroPreviewDialog(result['preview'], self)
             cache = self.preview_cache

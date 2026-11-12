@@ -33,6 +33,7 @@ class MicroSettings(QWidget):
         self.preset_status = label('')
         outer.addWidget(self.preset_status)
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setStyleSheet('QTabBar::tab { padding:5px 6px; }')
         self.tabs.setMinimumHeight(350)
         outer.addWidget(self.tabs)
         self.fields = {}
@@ -63,6 +64,26 @@ class MicroSettings(QWidget):
         picture.addRow(self.mirror)
         self.number(picture,'四周裁边','crop_percent',0,15,0,' %',1,1,.5)
         picture.addRow(label('裁边、镜像可能影响字幕，请先看样片。'))
+        self.combo(picture,'动态缩放','zoom_mode',[('关闭','none'),('缓慢推近','in'),('缓慢拉远','out'),('往返呼吸','pulse')])
+        self.number(picture,'缩放幅度','zoom_amount',0,25,8,' %',100,0,1)
+        self.number(picture,'运镜时长／周期','zoom_period',1,60,6,' 秒',1,1,.5)
+        def zoom_enabled():
+            for key in ('zoom_amount','zoom_period'):
+                self.fields[key].parentWidget().setEnabled(self.fields['zoom_mode'].currentData()!='none')
+        self.fields['zoom_mode'].currentIndexChanged.connect(zoom_enabled)
+        zoom_enabled()
+        picture.addRow(label('放大会裁去画布边缘；请预览检查字幕。'))
+
+        layers=self.page('叠加')
+        visual_filter='图片或视频 (*.png *.jpg *.jpeg *.webp *.mp4 *.mov *.mkv *.webm *.m4v)'
+        self.background_path=self.file_picker(layers,'背景素材',visual_filter)
+        layers.addRow(label('留空沿用画布背景；图片／视频铺满背景，短视频循环，忽略其声音。'))
+        self.pip_path=self.file_picker(layers,'画中画素材',visual_filter)
+        self.number(layers,'画中画占比','pip_scale',10,80,25,' %',100,0,1)
+        self.number(layers,'水平位置','pip_x',0,100,100,' %',100,0,5)
+        self.number(layers,'垂直位置','pip_y',0,100,100,' %',100,0,5)
+        self.number(layers,'不透明度','pip_opacity',10,100,100,' %',100,0,5)
+        layers.addRow(label('0% 为左／上，100% 为右／下；素材等比完整显示，叠片声音不混入。'))
 
         color = self.page('调色')
         self.color = QCheckBox('启用调色；多版本使用不同轻度扰动')
@@ -133,6 +154,47 @@ class MicroSettings(QWidget):
         self.mask_mode.currentIndexChanged.connect(mask_enabled)
         mask_enabled()
         region.addRow(label('以旋转、裁边后的前景画面为准；区域不能超出边界。模糊／遮挡不重建原画面。'))
+        variation=self.page('多版')
+        self.randomize=QCheckBox('启用随机多版本')
+        variation.addRow(self.randomize)
+        self.random_seed=self.integer(0,2147483647,1)
+        variation.addRow('固定种子',self.step(self.random_seed,'固定种子'))
+        variation.addRow(btn('换一组参数',lambda:self.random_seed.setValue((self.random_seed.value()+1)%2147483648)))
+        self.range_widgets={}
+        for key,title,low,high,a,b,decimals in [
+            ('foreground_scale','前景占比',.5,1,.72,.88,2),('speed','播放速度',.8,1.2,1.02,1.1,2),
+            ('brightness','亮度',-.2,.2,0,.04,2),('saturation','饱和度',0,2,1.05,1.2,2),
+            ('contrast','对比度',.5,1.5,1.05,1.2,2),('vertical_position','垂直位置',0,1,.25,.75,2),
+            ('zoom_amount','动态幅度',0,.25,.04,.12,2)]:
+            wrapper=QWidget();line=QHBoxLayout(wrapper);line.setContentsMargins(0,0,0,0)
+            enabled=QCheckBox();enabled.setChecked(key in {'foreground_scale','speed'})
+            line.addWidget(enabled)
+            pair=[]
+            for value in (a,b):
+                spin=QDoubleSpinBox();spin.setRange(low,high);spin.setDecimals(decimals)
+                spin.setValue(value);spin.setKeyboardTracking(False)
+                spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
+                spin.setAccessibleName(title+('下限' if not pair else '上限'))
+                line.addWidget(spin,1);pair.append(spin)
+                if len(pair)==1:line.addWidget(label('至'))
+            variation.addRow(title,wrapper)
+            self.range_widgets[key]=(enabled,*pair)
+            for spin in pair:spin.setEnabled(enabled.isChecked())
+            enabled.toggled.connect(lambda checked,spins=pair:[spin.setEnabled(checked) for spin in spins])
+        variation.addRow(label('前景、位置及动态幅度按比例填写，例如 0.8=80%；调色范围需启用调色，动态范围需启用运镜。'))
+        self.pool_widgets={}
+        for key,title in [('background_path','背景资源池'),('pip_path','叠片资源池'),
+                          ('watermark_path','水印资源池'),('music_path','音乐资源池')]:
+            self.pool_widgets[key]=self.file_picker(variation,title,'',directory=True)
+        variation.addRow(label('文件夹只读取本层支持格式，启用后替代对应单文件；音乐池需先选择混音或仅背景音乐。种子与来源相同则可复现。'))
+        def enable_default_ranges(enabled):
+            if enabled and not any(w[0].isChecked() for w in self.range_widgets.values()):
+                for key in ('foreground_scale','speed'):self.range_widgets[key][0].setChecked(True)
+        self.randomize.toggled.connect(enable_default_ranges)
+        # Keep the established first six categories in their original order.
+        layers_widget=layers.parentWidget()
+        self.tabs.removeTab(self.tabs.indexOf(layers_widget))
+        self.tabs.insertTab(6,layers_widget,'叠加')
         try:
             self.presets = read_presets(self.presets_path) if self.presets_path else {}
         except (OSError,ValueError,TypeError) as exc:
@@ -165,6 +227,13 @@ class MicroSettings(QWidget):
         self.watermark_path.setText(values['watermark_path']);self.music_path.setText(values['music_path'])
         self.drop_enabled.setChecked(values['drop_every']>0)
         self.drop_every.setValue(values['drop_every'] or 25)
+        self.background_path.setText(values['background_path']);self.pip_path.setText(values['pip_path'])
+        self.randomize.setChecked(values['randomize']);self.random_seed.setValue(values['random_seed'])
+        for key,(enabled,a,b) in self.range_widgets.items():
+            enabled.setChecked(key in values['random_ranges'])
+            if enabled.isChecked():
+                a.setValue(values['random_ranges'][key][0]);b.setValue(values['random_ranges'][key][1])
+        for key,widget in self.pool_widgets.items():widget.setText(values['resource_pools'].get(key,''))
 
     def apply_selected_preset(self, *_):
         if self.preset_combo.currentIndex()<0:
@@ -174,7 +243,7 @@ class MicroSettings(QWidget):
         self.preset_status.setText('已应用：'+name)
         self.delete_favorite_button.setEnabled(name!=RECOMMENDED_NAME)
         values=self.values()
-        missing=[values[key] for key in ('music_path','watermark_path')
+        missing=[values[key] for key in ('music_path','watermark_path','background_path','pip_path')
                  if values[key] and not Path(values[key]).is_file()]
         if missing:
             self.preset_status.setText('参数已应用；配乐或水印文件已移动，请重新选择。')
@@ -251,12 +320,13 @@ class MicroSettings(QWidget):
         form.addRow(title,combo)
         return combo
 
-    def file_picker(self,form,title,filters):
+    def file_picker(self,form,title,filters,directory=False):
         wrapper=QWidget();row=QHBoxLayout(wrapper);row.setContentsMargins(0,0,0,0)
         text=QLineEdit();text.setPlaceholderText('可选，本地文件')
         row.addWidget(text,1)
         def choose():
-            path,_=QFileDialog.getOpenFileName(self,'选择'+title,'',filters)
+            if directory:path=QFileDialog.getExistingDirectory(self,'选择'+title)
+            else:path,_=QFileDialog.getOpenFileName(self,'选择'+title,'',filters)
             if path:text.setText(path)
         row.addWidget(btn('浏览',choose))
         form.addRow(title,wrapper)
@@ -272,4 +342,8 @@ class MicroSettings(QWidget):
             color_adjust=self.color.isChecked(),title=self.title.text().strip(),title_size=self.title_size.value(),
             watermark_path=self.watermark_path.text().strip(),music_path=self.music_path.text().strip(),
             drop_every=self.drop_every.value() if self.drop_enabled.isChecked() else 0)
+        values.update(background_path=self.background_path.text().strip(),pip_path=self.pip_path.text().strip(),
+            randomize=self.randomize.isChecked(),random_seed=self.random_seed.value(),
+            random_ranges={key:[a.value(),b.value()] for key,(enabled,a,b) in self.range_widgets.items() if enabled.isChecked()},
+            resource_pools={key:w.text().strip() for key,w in self.pool_widgets.items() if w.text().strip()})
         return values

@@ -5,10 +5,11 @@ import hashlib
 import math
 import os
 import re
+import random
 import subprocess
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -83,6 +84,19 @@ class VariantOptions:
     mask_y: float = 0
     mask_w: float = 20
     mask_h: float = 10
+    zoom_mode: str = 'none'
+    zoom_amount: float = .08
+    zoom_period: float = 6
+    background_path: str = ''
+    pip_path: str = ''
+    pip_scale: float = .25
+    pip_x: float = 1
+    pip_y: float = 1
+    pip_opacity: float = 1
+    randomize: bool = False
+    random_seed: int = 1
+    random_ranges: dict = field(default_factory=dict)
+    resource_pools: dict = field(default_factory=dict)
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -95,7 +109,7 @@ class VariantOptions:
             raise ValueError('裁剪秒数不能为负；速度须为 0.8–1.2 倍')
         if len(self.title) > 40 or '\n' in self.title or '\r' in self.title:
             raise ValueError('标题限一行、40 字以内')
-        if self.mode == 'micro' and self.variants > 1 and not self.color_adjust:
+        if self.mode == 'micro' and self.variants > 1 and not self.color_adjust and not self.randomize:
             raise ValueError('生成多个微创新版本需启用轻度调色，以区分版本')
         if any(not isinstance(v, int) or v % 2 or not 240 <= v <= 3840 for v in (self.output_width, self.output_height)):
             raise ValueError('输出宽高须为 240–3840 的偶数')
@@ -121,11 +135,77 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
-            if self.watermark_path and (not Path(self.watermark_path).is_file() or Path(self.watermark_path).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}):
+            if self.zoom_mode not in {'none','in','out','pulse'}:
+                raise ValueError('动态缩放模式无效')
+            for value,low,high in ((self.zoom_amount,0,.25),(self.zoom_period,1,60),
+                (self.pip_scale,.1,.8),(self.pip_x,0,1),(self.pip_y,0,1),(self.pip_opacity,.1,1)):
+                if not math.isfinite(value) or not low<=value<=high:
+                    raise ValueError('动态构图或画中画参数超出范围')
+            if not isinstance(self.random_seed,int) or not 0<=self.random_seed<=2147483647:
+                raise ValueError('随机种子须为 0–2147483647 的整数')
+            if not isinstance(self.random_ranges,dict) or not isinstance(self.resource_pools,dict):
+                raise ValueError('随机范围和资源池格式无效')
+            for key,bounds in self.random_ranges.items():
+                if key not in RANDOM_LIMITS or not isinstance(bounds,(list,tuple)) or len(bounds)!=2:
+                    raise ValueError('不支持的随机参数')
+                low,high=RANDOM_LIMITS[key]
+                if not all(isinstance(v,(int,float)) and math.isfinite(v) for v in bounds) or not low<=bounds[0]<=bounds[1]<=high:
+                    raise ValueError('随机参数范围无效：'+key)
+            for key,folder in self.resource_pools.items():
+                if key not in RESOURCE_TYPES or not isinstance(folder,str):
+                    raise ValueError('资源池类型无效')
+                if self.randomize and not Path(folder).is_dir():
+                    raise ValueError('资源池文件夹不存在：'+folder)
+            if self.randomize:
+                if not self.color_adjust and any(k in self.random_ranges for k in ('brightness','contrast','saturation')):
+                    raise ValueError('随机调色范围需先启用调色')
+                if 'zoom_amount' in self.random_ranges and self.zoom_mode=='none':
+                    raise ValueError('随机动态幅度需先启用动态缩放')
+                if self.resource_pools.get('music_path') and self.audio_mode not in {'mix','replace'}:
+                    raise ValueError('音乐资源池需选择混音或仅背景音乐')
+                if self.variants>1 and not any(a!=b for a,b in self.random_ranges.values()) and not self.resource_pools:
+                    raise ValueError('随机多版本至少启用一项非零范围或资源池')
+            for key in ('background_path','pip_path'):
+                path=getattr(self,key)
+                if path and not (self.randomize and self.resource_pools.get(key)) and (not Path(path).is_file() or Path(path).suffix.lower() not in VISUAL_TYPES):
+                    raise ValueError('请选择存在的背景或叠加图片／视频文件')
+            if self.watermark_path and not (self.randomize and self.resource_pools.get('watermark_path')) and (not Path(self.watermark_path).is_file() or Path(self.watermark_path).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}):
                 raise ValueError('请选择存在的 PNG/JPG/WebP 水印图片')
-            if self.audio_mode in {'mix', 'replace'} and (not self.music_path or not Path(self.music_path).is_file()):
+            if self.audio_mode in {'mix', 'replace'} and not (self.randomize and self.resource_pools.get('music_path')) and (not self.music_path or not Path(self.music_path).is_file()):
                 raise ValueError('请先选择背景音乐文件')
         return self
+
+
+IMAGE_TYPES={'.png','.jpg','.jpeg','.webp'}
+VISUAL_TYPES=IMAGE_TYPES|{'.mp4','.mov','.mkv','.webm','.m4v'}
+RESOURCE_TYPES={'background_path':VISUAL_TYPES,'pip_path':VISUAL_TYPES,
+    'watermark_path':IMAGE_TYPES,'music_path':{'.mp3','.wav','.m4a','.aac','.flac','.ogg'}}
+RANDOM_LIMITS={'foreground_scale':(.5,1),'speed':(.8,1.2),'brightness':(-.2,.2),
+    'contrast':(.5,1.5),'saturation':(0,2),'zoom_amount':(0,.25),'vertical_position':(0,1)}
+
+
+def resolve_variant_options(options, source_key, version):
+    """Stable per-source/version plan; seed and sorted pools make preview repeatable."""
+    options.validate()
+    if not options.randomize:
+        return options
+    rng=random.Random(f'{options.random_seed}|{source_key}|{version}')
+    changes={key:round(rng.uniform(*bounds),6) for key,bounds in sorted(options.random_ranges.items())}
+    for key,folder in sorted(options.resource_pools.items()):
+        paths=sorted((p.resolve() for p in Path(folder).iterdir() if p.is_file()
+                      and p.suffix.lower() in RESOURCE_TYPES[key]),key=lambda p:str(p).casefold())
+        if not paths:
+            raise ValueError('资源池没有可用素材：'+folder)
+        changes[key]=str(rng.choice(paths))
+    return replace(options,**changes,randomize=False,variants=1,resource_pools={},random_ranges={}).validate()
+
+
+def extra_input_indexes(options):
+    keys=[]
+    if options.watermark_path:keys.append('watermark_path')
+    if options.audio_mode in {'mix','replace'}:keys.append('music_path')
+    keys.extend(k for k in ('background_path','pip_path') if getattr(options,k))
+    return {key:i+1 for i,key in enumerate(keys)}
 
 
 def file_md5(path, should_stop=None):
@@ -167,7 +247,7 @@ def _position(position, width, height, canvas_w='w', canvas_h='h'):
     return x, y
 
 
-def build_video_filter(options, version=1, text_path=None, source_metadata=None):
+def build_video_filter(options, version=1, text_path=None, source_metadata=None, timeline_offset=0):
     meta = source_metadata or {}
     width, height = options.output_width, options.output_height
     fw, fh = int(width*options.foreground_scale)//2*2, int(height*options.foreground_scale)//2*2
@@ -195,7 +275,13 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None)
             f'[clear][masked]overlay=main_w*{options.mask_x/100}:main_h*{options.mask_y/100}')
     time_filter = prepared
     y = f'(H-h)*{options.vertical_position}'
-    if options.background == 'blur':
+    indexes=extra_input_indexes(options)
+    if options.background_path:
+        graph=(f'{time_filter},scale={fw}:{fh}:force_original_aspect_ratio=decrease:force_divisible_by=2[front];'
+            f'[{indexes["background_path"]}:v]setpts=PTS-STARTPTS,scale={width}:{height}:'
+            f'force_original_aspect_ratio=increase,crop={width}:{height},setsar=1[back];'
+            f'[back][front]overlay=(W-w)/2:{y}:shortest=1,setsar=1')
+    elif options.background == 'blur':
         graph = (f'{time_filter},split=2[bg][fg];'
                  f'[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},'
                  'boxblur=20:2[back];'
@@ -210,6 +296,20 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None)
         graph += f',unsharp=5:5:{options.sharpen}:5:5:0'
     if options.denoise:
         graph += f',hqdn3d={options.denoise}'
+    if options.zoom_mode!='none' and options.zoom_amount:
+        fps=options.output_fps or meta.get('frame_rate') or 30
+        time=f'(on/{fps}+{timeline_offset})'
+        phase={'in':f'min(1,{time}/{options.zoom_period})',
+               'out':f'1-min(1,{time}/{options.zoom_period})',
+               'pulse':f'(1-cos(2*PI*{time}/{options.zoom_period}))/2'}[options.zoom_mode]
+        graph+=(f",fps={fps},zoompan=z='1+{options.zoom_amount}*({phase})':"
+                f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:fps={fps}:s={width}x{height}")
+    if options.pip_path:
+        graph+=(f'[basepip];[{indexes["pip_path"]}:v]setpts=PTS-STARTPTS,'
+            f'scale={int(width*options.pip_scale)//2*2}:{int(height*options.pip_scale)//2*2}:'
+            f'force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,'
+            f'colorchannelmixer=aa={options.pip_opacity}[pip];'
+            f'[basepip][pip]overlay=(W-w)*{options.pip_x}:(H-h)*{options.pip_y}:shortest=1')
     if options.title and text_path:
         graph += ',' + _title_filter(text_path, options)
     if options.watermark_path:
@@ -223,7 +323,7 @@ def build_audio_graph(options, metadata, duration):
     original = f'asetpts=PTS-STARTPTS,atempo={options.speed},volume={options.original_volume}'
     if options.audio_mode not in {'mix', 'replace'}:
         return '', original, None
-    music_index = 2 if options.watermark_path else 1
+    music_index = extra_input_indexes(options)['music_path']
     graph = (f';[{music_index}:a:0]atrim=duration={duration},asetpts=PTS-STARTPTS,'
              f'volume={options.music_volume}[music]')
     if options.audio_mode == 'mix' and metadata.get('audio'):
@@ -234,24 +334,28 @@ def build_audio_graph(options, metadata, duration):
 
 
 def _render_micro(source, target, options, metadata, clip_start, clip_duration,
-                  *, version=1, progress=None, should_stop=None):
+                  *, version=1, progress=None, should_stop=None, timeline_offset=0):
     with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
         text_path = Path(work) / 'title.txt'
         text_path.write_text(options.title, encoding='utf-8')
         duration = clip_duration / options.speed
         audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration)
         return transcode_for_upload_bitrate(
-            source, target, video_filter=build_video_filter(options, version, text_path, metadata) + audio_graph,
+            source, target, video_filter=build_video_filter(options, version, text_path, metadata,timeline_offset) + audio_graph,
             audio_filter=audio_filter, clip_start=clip_start, clip_duration=clip_duration,
             output_duration=duration, should_stop=should_stop, progress=progress,
             image_overlay_path=options.watermark_path or None,
             background_audio_path=options.music_path if options.audio_mode in {'mix', 'replace'} else None,
-            audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute')
+            audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute',
+            visual_inputs=[getattr(options,k) for k in ('background_path','pip_path') if getattr(options,k)],
+            auxiliary_start=timeline_offset)
 
 
 def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None):
     """Render a bounded excerpt with the production filters, without registering a product."""
     options.validate()
+    requested=asdict(options)
+    options=resolve_variant_options(options,str(Path(source).resolve()),1)
     if options.mode != 'micro' or not math.isfinite(start) or start < 0 or not 1 <= seconds <= 30:
         raise ValueError('预览起点须非负，时长须为 1–30 秒')
     if Path(source).resolve() == Path(target).resolve():
@@ -262,11 +366,14 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
     if clip_duration < .5:
         raise ValueError('预览起点已接近或超出裁剪后的片尾，请减小起点')
     result = _render_micro(source, target, options, metadata, clip_start, clip_duration,
-                           progress=progress, should_stop=should_stop)
-    return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start}
+                           progress=progress, should_stop=should_stop,
+                           timeline_offset=(clip_start-options.trim_start)/options.speed)
+    return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start,
+            'resolved_options':asdict(options),'requested_options':requested,
+            'source_path':str(Path(source).resolve())}
 
 
-def generate_variants(items, output_root, options, *, progress=None, should_stop=None):
+def generate_variants(items, output_root, options, *, progress=None, should_stop=None, resolved_plans=None):
     options.validate()
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
     root = Path(output_root) / run_id
@@ -293,6 +400,9 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 progress({'phase': 'started', 'index': index, 'total': total, 'video_id': item['video_id']})
             try:
                 source = Path(item['path']).resolve()
+                frozen=(resolved_plans or {}).get((str(source),version))
+                resolved=(replace(frozen,uploader=options.uploader).validate() if frozen is not None
+                    else resolve_variant_options(options,str(source),version)) if options.mode=='micro' else options
                 if source_metadata is None:
                     source_metadata = probe(source)
                     source_md5 = file_md5(source, should_stop)
@@ -311,11 +421,11 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     if metadata['file_size_bytes'] > MAXIMUM_UPLOAD_FILE_SIZE_BYTES:
                         raise ValueError('文件超过平台 510 MB 上限；仅改 MD5 不会缩小文件，请先剪辑或压缩')
                 else:
-                    clip_duration = source_metadata['duration'] - options.trim_start - options.trim_end
+                    clip_duration = source_metadata['duration'] - resolved.trim_start - resolved.trim_end
                     if clip_duration < 0.5:
                         raise ValueError('去头尾后不足 0.5 秒，请减少裁剪时长')
-                    metadata = _render_micro(source, target, options, source_metadata,
-                        options.trim_start, clip_duration, version=version, should_stop=should_stop,
+                    metadata = _render_micro(source, target, resolved, source_metadata,
+                        resolved.trim_start, clip_duration, version=1 if options.randomize else version, should_stop=should_stop,
                         progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
                                                          'video_id': item['video_id']})) if progress else None)
                 output_md5 = file_md5(target, should_stop)
@@ -325,7 +435,8 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     'path': str(target.resolve()), 'metadata': metadata, 'drama': drama,
                     'source_path': str(source), 'source_video_id': item['video_id'],
                     'source_md5': source_md5, 'output_md5': output_md5,
-                    'mode': options.mode, 'version': version, 'options': asdict(options),
+                    'mode': options.mode, 'version': version, 'options': asdict(resolved),
+                    'requested_options':asdict(options),
                     'upload_drama_info': item.get('upload_drama_info', {}),
                 })
                 if progress:
