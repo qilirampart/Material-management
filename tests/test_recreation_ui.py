@@ -6,13 +6,48 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QDate
+from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtTest import QTest
+from PySide6.QtCore import QDate, Qt
 from src.desktop import MainWindow
 from src.recreation_page import RecreationPage
 
 
 class RecreationUiTests(unittest.TestCase):
+    def test_checkbox_bulk_actions_count_and_refresh_are_identity_based(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = RecreationPage({'output_root': folder,
+                                   'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
+            page.drama_input.setPlainText('4100-测试剧')
+            page.create_batch()
+            page.batch.record_page(page.batch.state['dramas'][0],
+                                   [{'id': str(i), 'name': '二创'} for i in range(3)], 1)
+            page.refresh_sources()
+            page.source_table.setCurrentCell(0, 0)
+            QTest.keyClick(page.source_table, Qt.Key_Space)
+            self.assertEqual(page.checked_rows(page.source_table), [0])
+            self.assertIn('已勾选 1 条', page.selection_labels[page.source_table].text())
+            page.set_checked(page.source_table, 'invert')
+            self.assertEqual(page.checked_rows(page.source_table), [1, 2])
+            page.batch.state['sources'].reverse()
+            page.refresh_sources()
+            self.assertEqual(page.checked_rows(page.source_table), [0, 1])
+            page.set_checked(page.source_table, 'all')
+            self.assertEqual(len(page.checked_rows(page.source_table)), 3)
+            next(b for b in page.source_table.parentWidget().findChildren(QPushButton)
+                 if b.text() == '清除选择').click()
+            self.assertEqual(page.checked_rows(page.source_table), [])
+            page.source_table.selectRow(2)
+            with patch.object(page, '_start_browser_task') as start:
+                page.start_downloads(True)
+                start.assert_not_called()
+                page.source_table.item(1, 0).setCheckState(Qt.Checked)
+                page.start_downloads(True)
+                self.assertEqual(start.call_args.kwargs['identities'], ['4100_1'])
+            page.load_batch_view()
+            self.assertEqual(page.checked_rows(page.source_table), [])
+            page.close()
+
     def test_new_batch_does_not_keep_previous_progress_or_query_dates(self):
         with tempfile.TemporaryDirectory() as folder:
             page = RecreationPage({'output_root': folder,
@@ -192,7 +227,7 @@ class RecreationUiTests(unittest.TestCase):
                     'metadata': {'video_bitrate_bps': 4_200_000},
                     'upload_drama_info': {'drama_platform_id': drama_id, 'drama_name': name}})
             page.receive_outputs({'outputs': outputs})
-            page.output_table.selectAll()
+            page.set_checked(page.output_table, 'all')
             page.prepare_upload()
             self.assertEqual(len(page.platform.materials), 1)
             self.assertEqual(page.platform.materials[0]['upload_drama_info']['drama_platform_id'], '4100')

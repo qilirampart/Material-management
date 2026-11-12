@@ -34,6 +34,7 @@ class RecreationPage(QWidget):
         self.collection_task = None
         self.collection_busy = False
         self.collection_stop = threading.Event()
+        self.selection_labels = {}
         outer = QVBoxLayout(self)
         outer.addWidget(title('素材再创作'))
         self.summary = label('独立批次 · 共用智投登录')
@@ -81,32 +82,35 @@ class RecreationPage(QWidget):
         self.collection_bar.setRange(0, 1)
         self.collection_bar.setValue(0)
         box.addWidget(self.collection_bar)
-        self.source_table = self._table(['剧目', '素材', '下载状态', '本地路径'])
-        self.source_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.source_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.source_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Interactive)
-        self.source_table.setColumnWidth(3, 230)
+        self.source_table = self._table(['勾选', '剧目', '素材', '下载状态', '本地路径'])
+        self.source_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.source_table.setColumnWidth(1, 200)
+        self.source_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.source_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)
+        self.source_table.setColumnWidth(4, 230)
+        box.addLayout(self._selection_bar(self.source_table))
         box.addWidget(self.source_table, 1)
         downloads = QHBoxLayout()
         self.download_button = button('下载全部待处理素材', lambda: self.start_downloads(False))
-        self.download_selected_button = button('下载选中素材', lambda: self.start_downloads(True))
+        self.download_selected_button = button('下载勾选素材', lambda: self.start_downloads(True))
         self.stop_button = button('停止', self.stop_collection)
         self.stop_button.setEnabled(False)
         for control in (self.download_button, self.download_selected_button, self.stop_button):
             downloads.addWidget(control)
         downloads.addStretch()
-        downloads.addWidget(button('加工选中素材 →', self.process_selected, True))
+        downloads.addWidget(button('加工勾选素材 →', self.process_selected, True))
         box.addLayout(downloads)
         self.tabs.addTab(collect, '1 采集下载')
         processing = QWidget()
         box = QVBoxLayout(processing)
-        box.addWidget(label('选中来源生成样片或批量加工；原视频保持不变'))
+        box.addWidget(label('勾选来源生成样片或批量加工；原视频保持不变'))
         row = QHBoxLayout()
-        row.addWidget(button('加工选中来源', self.process_selected, True))
+        row.addWidget(button('加工勾选来源', self.process_selected, True))
         row.addWidget(button('打开本批次目录', self.open_folder))
         row.addStretch()
         box.addLayout(row)
-        self.output_table = self._table(['剧目', '处理方式', '成品', '码率 / 大小'])
+        self.output_table = self._table(['勾选', '剧目', '处理方式', '成品', '码率 / 大小'])
+        box.addLayout(self._selection_bar(self.output_table))
         box.addWidget(self.output_table, 1)
         row = QHBoxLayout()
         row.addWidget(button('播放选中成品', self.play_selected))
@@ -135,7 +139,52 @@ class RecreationPage(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         table.setAlternatingRowColors(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        table.setColumnWidth(0, 66)
         return table
+
+    def _selection_bar(self, table):
+        row = QHBoxLayout()
+        for text, action in (('全选', 'all'), ('反选', 'invert'), ('清除选择', 'clear')):
+            row.addWidget(button(text, lambda checked=False, t=table, a=action: self.set_checked(t, a)))
+        summary = label('已勾选 0 条 · 共 0 条')
+        summary.setWordWrap(False)
+        self.selection_labels[table] = summary
+        row.addWidget(summary)
+        row.addStretch()
+        table.itemChanged.connect(lambda item, t=table: self._update_checked_count(t) if item.column() == 0 else None)
+        return row
+
+    @staticmethod
+    def checked_rows(table):
+        return [row for row in range(table.rowCount())
+                if table.item(row, 0) and table.item(row, 0).checkState() == Qt.Checked]
+
+    def _update_checked_count(self, table):
+        self.selection_labels[table].setText(f'已勾选 {len(self.checked_rows(table))} 条 · 共 {table.rowCount()} 条')
+
+    def set_checked(self, table, action):
+        table.blockSignals(True)
+        try:
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                checked = action == 'all' or (action == 'invert' and item.checkState() != Qt.Checked)
+                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        finally:
+            table.blockSignals(False)
+        self._update_checked_count(table)
+
+    @staticmethod
+    def _checked_identities(table):
+        return {table.item(row, 0).data(Qt.UserRole) for row in RecreationPage.checked_rows(table)}
+
+    @staticmethod
+    def _check_item(identity, checked):
+        item = QTableWidgetItem()
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+        item.setData(Qt.UserRole, identity)
+        item.setCheckState(Qt.Checked if identity in checked else Qt.Unchecked)
+        return item
 
     def active_background_tasks(self):
         tasks = self.platform.active_background_tasks()
@@ -210,6 +259,8 @@ class RecreationPage(QWidget):
             selector.clear()
             for drama in self.batch.state['dramas']:
                 selector.addItem(drama['id'] + ' · ' + (drama['name'] or '待确认剧名'), drama['id'])
+        self.source_table.setRowCount(0)
+        self.output_table.setRowCount(0)
         self.refresh_sources()
         self.refresh_outputs()
         self.platform.set_materials([], {}, {}, set(), self.batch.folder)
@@ -246,7 +297,7 @@ class RecreationPage(QWidget):
     def start_downloads(self, selected_only):
         if not self.batch or self.work_in_progress():
             return
-        indices = {x.row() for x in self.source_table.selectionModel().selectedRows()}
+        indices = set(self.checked_rows(self.source_table))
         items = [x for i, x in enumerate(self.batch.state['sources']) if x.get('source_material_id')
                  and (not selected_only or i in indices)]
         pending = [x for x in items if not (x.get('path') and Path(x['path']).is_file()
@@ -351,7 +402,7 @@ class RecreationPage(QWidget):
             if phase not in {'downloaded', 'failed'}:
                 for row, item in enumerate(self.batch.state['sources']):
                     if item['video_id'] == event['video_id']:
-                        self.source_table.item(row, 2).setText(names.get(phase, phase))
+                        self.source_table.item(row, 3).setText(names.get(phase, phase))
                         break
         self.collection_status.setText(text)
         if phase in {'page', 'downloaded', 'failed'}:
@@ -417,35 +468,46 @@ class RecreationPage(QWidget):
 
     def refresh_sources(self):
         sources = self.batch.state['sources'] if self.batch else []
+        checked = self._checked_identities(self.source_table)
+        self.source_table.blockSignals(True)
         self.source_table.setRowCount(len(sources))
         for index, item in enumerate(sources):
+            self.source_table.setItem(index, 0, self._check_item(item['video_id'], checked))
             status = '本地可用' if item.get('path') and Path(item['path']).is_file() else {
                 'pending': '待下载', 'downloading': '下载中', 'failed': '下载失败',
                 'downloaded': '文件缺失', 'local': '文件缺失',
             }.get(item.get('download_status'), '待下载')
             for column, value in enumerate((item['drama'], item['name'],
-                                           status, item.get('path', ''))):
+                                           status, item.get('path', '')), 1):
                 self.source_table.setItem(index, column, QTableWidgetItem(value))
                 self.source_table.item(index, column).setToolTip(item.get('download_error') or value)
+        self.source_table.blockSignals(False)
+        self._update_checked_count(self.source_table)
 
     def refresh_outputs(self):
         outputs = self.batch.state['outputs'] if self.batch else []
+        checked = self._checked_identities(self.output_table)
+        self.output_table.blockSignals(True)
         self.output_table.setRowCount(len(outputs))
         for index, item in enumerate(outputs):
+            self.output_table.setItem(index, 0, self._check_item(item['path'], checked))
             meta = item['metadata']
             info = f"{meta.get('video_bitrate_bps', 0) / 1000:.0f} kbps · {meta.get('file_size_bytes', 0) / 1048576:.1f} MB"
             for column, value in enumerate((item['drama'], '微创新' if item['mode'] == 'micro' else '改 MD5',
-                                           Path(item['path']).name, info)):
+                                           Path(item['path']).name, info), 1):
                 self.output_table.setItem(index, column, QTableWidgetItem(value))
+                self.output_table.item(index, column).setToolTip(value)
+        self.output_table.blockSignals(False)
+        self._update_checked_count(self.output_table)
 
     def process_selected(self):
         if not self.batch or self.work_in_progress():
             return
-        indices = sorted({x.row() for x in self.source_table.selectionModel().selectedRows()})
+        indices = self.checked_rows(self.source_table)
         sources = [self.batch.state['sources'][i] for i in indices]
         available = [x for x in sources if x.get('path') and Path(x['path']).is_file()]
         if len(available) != len(sources) or not available:
-            self.message.setText('请在采集下载页选中本地可用的来源素材')
+            self.message.setText('请在采集下载页勾选本地可用的来源素材')
             self.tabs.setCurrentIndex(0)
             return
         dialog = VariantDialog(available, self.batch.folder / '加工成品', self)
@@ -470,11 +532,11 @@ class RecreationPage(QWidget):
         if not self.batch or self.work_in_progress():
             return
         drama_id = self.upload_drama.currentData()
-        indices = sorted({x.row() for x in self.output_table.selectionModel().selectedRows()})
+        indices = self.checked_rows(self.output_table)
         outputs = [self.batch.state['outputs'][i] for i in indices
                    if self.batch.state['outputs'][i].get('upload_drama_info', {}).get('drama_platform_id') == drama_id]
         if not outputs:
-            self.message.setText('请选择成品，并选择相应的上传剧目')
+            self.message.setText('请勾选成品，并选择相应的上传剧目')
             return
         rows, records = [], {}
         for output in outputs:
@@ -498,9 +560,11 @@ class RecreationPage(QWidget):
     def play_selected(self):
         if not self.batch:
             return
-        indices = self.output_table.selectionModel().selectedRows()
+        indices = self.checked_rows(self.output_table)
+        if not indices:
+            indices = [x.row() for x in self.output_table.selectionModel().selectedRows()]
         if indices:
-            local_open(self.batch.state['outputs'][indices[0].row()]['path'])
+            local_open(self.batch.state['outputs'][indices[0]]['path'])
 
     def open_folder(self):
         if self.batch:

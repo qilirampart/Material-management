@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QComboBox,
     QDoubleSpinBox, QSpinBox, QLineEdit, QCheckBox, QPlainTextEdit,
-    QProgressBar, QScrollArea, QWidget,
+    QProgressBar, QScrollArea, QWidget, QAbstractSpinBox,
 )
 from src.ui_design import Background, btn, label
 from src.desktop_widgets import local_open
@@ -43,7 +43,8 @@ class VariantDialog(QDialog):
         form.addRow('上传人缩写', self.uploader)
         self.count = QSpinBox()
         self.count.setRange(1, 10)
-        form.addRow('每条生成数量', self.count)
+        self.count_field = self._stepper(self.count, '每条生成数量')
+        form.addRow('每条生成数量', self.count_field)
         box.addLayout(form)
         self.processing_group = QGroupBox('微创新参数')
         fields = QFormLayout(self.processing_group)
@@ -54,9 +55,9 @@ class VariantDialog(QDialog):
         self.trim_start = self._decimal(0, 60, 0.15, ' 秒')
         self.trim_end = self._decimal(0, 60, 0.15, ' 秒')
         self.speed = self._decimal(0.8, 1.2, 1.02, ' 倍')
-        fields.addRow('去掉开头', self.trim_start)
-        fields.addRow('去掉结尾', self.trim_end)
-        fields.addRow('播放速度（保持音高）', self.speed)
+        fields.addRow('去掉开头', self._stepper(self.trim_start, '去掉开头'))
+        fields.addRow('去掉结尾', self._stepper(self.trim_end, '去掉结尾'))
+        fields.addRow('播放速度（保持音高）', self._stepper(self.speed, '播放速度'))
         self.color = QCheckBox('轻度调色；多个版本使用不同强度')
         self.color.setChecked(True)
         fields.addRow('画面风格', self.color)
@@ -102,6 +103,23 @@ class VariantDialog(QDialog):
         self.mode.currentIndexChanged.connect(self.update_mode)
 
     @staticmethod
+    def _stepper(spin, name):
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        spin.setAccessibleName(name)
+        field = QWidget()
+        row = QHBoxLayout(field)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(5)
+        row.addWidget(spin, 1)
+        for text, action, callback in (('−', '减少', spin.stepDown), ('+', '增加', spin.stepUp)):
+            control = btn(text, callback)
+            control.setFixedWidth(36)
+            control.setAccessibleName(action + name)
+            control.setToolTip(action + name)
+            row.addWidget(control)
+        return field
+
+    @staticmethod
     def _decimal(minimum, maximum, value, suffix):
         widget = QDoubleSpinBox()
         widget.setRange(minimum, maximum)
@@ -144,7 +162,7 @@ class VariantDialog(QDialog):
         task.result.connect(self.show_result)
         task.failed.connect(self.status.setText)
         task.finished.connect(self.finished_processing)
-        for control in (self.mode, self.count, self.uploader, self.processing_group,
+        for control in (self.mode, self.count_field, self.uploader, self.processing_group,
                         self.start_button, self.sample_button, self.import_button):
             control.setEnabled(False)
         self.bar.setRange(0, 0)
@@ -173,7 +191,7 @@ class VariantDialog(QDialog):
         self.log.appendPlainText('处理记录：' + result['manifest'])
 
     def finished_processing(self):
-        for control in (self.mode, self.count, self.uploader, self.start_button, self.sample_button):
+        for control in (self.mode, self.count_field, self.uploader, self.start_button, self.sample_button):
             control.setEnabled(True)
         self.update_mode()
         self.stop_button.setEnabled(False)

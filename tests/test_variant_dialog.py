@@ -5,13 +5,28 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QPushButton
 from src.variant_dialog import VariantDialog
 from src.recreation_page import RecreationPage
 from src.upload import build_upload_plan
 
 
 class VariantDialogTests(unittest.TestCase):
+    def test_numeric_controls_have_visible_working_step_buttons(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dialog = VariantDialog([], folder)
+            self.assertEqual(dialog.count.buttonSymbols(), QAbstractSpinBox.NoButtons)
+            buttons = {b.accessibleName(): b for b in dialog.findChildren(QPushButton)}
+            buttons['增加每条生成数量'].click()
+            self.assertEqual(dialog.count.value(), 2)
+            buttons['减少每条生成数量'].click()
+            self.assertEqual(dialog.count.value(), 1)
+            buttons['增加去掉开头'].click()
+            self.assertAlmostEqual(dialog.trim_start.value(), .16)
+            dialog.processing_group.setEnabled(False)
+            self.assertFalse(buttons['增加去掉开头'].isEnabled())
+            dialog.close()
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -40,7 +55,7 @@ class VariantDialogTests(unittest.TestCase):
                       'source_video_id': '123', 'output_md5': 'abc',
                       'upload_drama_info': {'drama_platform_id': '4100', 'drama_name': '测试剧'}}
             page.receive_outputs({'outputs': [output]})
-            page.output_table.selectAll()
+            page.set_checked(page.output_table, 'all')
             page.prepare_upload()
             row = page.platform.materials[0]
             record = row['record']
