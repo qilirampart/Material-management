@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import subprocess
 import tempfile
 import uuid
@@ -52,6 +53,36 @@ class VariantOptions:
     speed: float = 1.02
     color_adjust: bool = True
     title: str = ''
+    output_width: int = 720
+    output_height: int = 1280
+    foreground_scale: float = .9
+    vertical_position: float = .5
+    mirror: bool = False
+    rotation: int = 0
+    crop_percent: float = 0
+    brightness: float = 0
+    contrast: float = 1
+    saturation: float = 1
+    sharpen: float = 0
+    denoise: float = 0
+    output_fps: int = 0
+    drop_every: int = 0
+    title_position: str = 'top'
+    title_size: int = 28
+    title_color: str = 'FFFFFF'
+    watermark_path: str = ''
+    watermark_position: str = 'top_right'
+    watermark_scale: float = .15
+    watermark_opacity: float = .8
+    audio_mode: str = 'original'
+    music_path: str = ''
+    original_volume: float = 1
+    music_volume: float = .25
+    mask_mode: str = 'none'
+    mask_x: float = 0
+    mask_y: float = 0
+    mask_w: float = 20
+    mask_h: float = 10
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -66,6 +97,34 @@ class VariantOptions:
             raise ValueError('标题限一行、40 字以内')
         if self.mode == 'micro' and self.variants > 1 and not self.color_adjust:
             raise ValueError('生成多个微创新版本需启用轻度调色，以区分版本')
+        if any(not isinstance(v, int) or v % 2 or not 240 <= v <= 3840 for v in (self.output_width, self.output_height)):
+            raise ValueError('输出宽高须为 240–3840 的偶数')
+        ranges = [(self.foreground_scale, .5, 1), (self.vertical_position, 0, 1), (self.crop_percent, 0, 15),
+                  (self.brightness, -.2, .2), (self.contrast, .5, 1.5), (self.saturation, 0, 2),
+                  (self.sharpen, 0, 2), (self.denoise, 0, 10), (self.watermark_scale, .05, .5),
+                  (self.watermark_opacity, .1, 1), (self.original_volume, 0, 2), (self.music_volume, 0, 2),
+                  (self.mask_x, 0, 99), (self.mask_y, 0, 99), (self.mask_w, 1, 100), (self.mask_h, 1, 100)]
+        if any(not math.isfinite(v) or not low <= v <= high for v, low, high in ranges):
+            raise ValueError('画面或音频参数超出允许范围')
+        if self.rotation not in {0, 90, 180, 270} or self.output_fps not in {0, 24, 25, 30, 50, 60}:
+            raise ValueError('不支持的旋转角度或帧率')
+        if not isinstance(self.drop_every, int) or (self.drop_every != 0 and not 2 <= self.drop_every <= 300):
+            raise ValueError('抽帧间隔须为 2–300，0 表示关闭')
+        positions = {'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'}
+        if self.title_position not in positions or self.watermark_position not in positions:
+            raise ValueError('文字或水印位置无效')
+        if not isinstance(self.title_size, int) or not 16 <= self.title_size <= 64 or not re.fullmatch(r'[0-9A-Fa-f]{6}', self.title_color):
+            raise ValueError('字号须为 16–64，文字颜色须为六位十六进制颜色')
+        if self.audio_mode not in {'original', 'mute', 'mix', 'replace'}:
+            raise ValueError('音频处理方式无效')
+        if self.mask_mode not in {'none', 'blur', 'cover'} or (self.mask_mode != 'none'
+                and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
+            raise ValueError('区域范围不能越过画面边界')
+        if self.mode == 'micro':
+            if self.watermark_path and (not Path(self.watermark_path).is_file() or Path(self.watermark_path).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}):
+                raise ValueError('请选择存在的 PNG/JPG/WebP 水印图片')
+            if self.audio_mode in {'mix', 'replace'} and (not self.music_path or not Path(self.music_path).is_file()):
+                raise ValueError('请先选择背景音乐文件')
         return self
 
 
@@ -86,7 +145,7 @@ def _filter_path(path):
     return str(Path(path).resolve()).replace('\\', '/').replace(':', '\\:').replace("'", "'\\''")
 
 
-def _title_filter(text_path):
+def _title_filter(text_path, options):
     candidates = [
         Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts/msyh.ttc',
         Path('/System/Library/Fonts/PingFang.ttc'),
@@ -95,28 +154,83 @@ def _title_filter(text_path):
     font = next((p for p in candidates if p.is_file()), None)
     if font is None:
         raise ValueError('未找到标题字体，请先关闭标题选项')
+    x, y = _position(options.title_position, 'text_w', 'text_h')
+    size = min(options.title_size, max(1, (options.output_width-64)//max(1, len(options.title))))
     return (f"drawtext=fontfile='{_filter_path(font)}':textfile='{_filter_path(text_path)}':"
-            "expansion=none:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:"
-            "boxborderw=12:x=(w-text_w)/2:y=32")
+            f"expansion=none:fontsize={size}:fontcolor=0x{options.title_color}:box=1:boxcolor=black@0.6:"
+            f"boxborderw=12:x={x}:y={y}")
 
 
-def build_video_filter(options, version=1, text_path=None):
-    # Fit the entire foreground within a 648x1080 safe area; never crop subtitles.
-    time_filter = f'setpts=(PTS-STARTPTS)/{options.speed}'
+def _position(position, width, height, canvas_w='w', canvas_h='h'):
+    x = '24' if position.endswith('left') else f'{canvas_w}-{width}-24' if position.endswith('right') else f'({canvas_w}-{width})/2'
+    y = f'{canvas_h}-{height}-32' if position.startswith('bottom') else '32'
+    return x, y
+
+
+def build_video_filter(options, version=1, text_path=None, source_metadata=None):
+    meta = source_metadata or {}
+    width, height = options.output_width, options.output_height
+    fw, fh = int(width*options.foreground_scale)//2*2, int(height*options.foreground_scale)//2*2
+    filters = [f'setpts=(PTS-STARTPTS)/{options.speed}']
+    if options.drop_every:
+        filters.append(f"select='not(eq(mod(n+1,{options.drop_every}),0))'")
+    if options.output_fps or options.drop_every:
+        filters.append(f"fps={options.output_fps or meta.get('frame_rate') or 30}")
+    if options.mirror:
+        filters.append('hflip')
+    if options.rotation:
+        filters.append({90: 'transpose=1', 180: 'hflip,vflip', 270: 'transpose=2'}[options.rotation])
+    if options.crop_percent:
+        ratio = 1-options.crop_percent/50
+        filters.append(f'crop=trunc(iw*{ratio}/2)*2:trunc(ih*{ratio}/2)*2')
+    prepared = '[0:v]' + ','.join(filters)
+    if options.mask_mode == 'cover':
+        prepared += (f',drawbox=x=iw*{options.mask_x/100}:y=ih*{options.mask_y/100}:'
+                     f'w=iw*{options.mask_w/100}:h=ih*{options.mask_h/100}:color=black:t=fill')
+    if options.mask_mode == 'blur':
+        # Bound the radius by the actual cropped region, including after rotation.
+        prepared += (f',split[clear][region];[region]crop=max(2\,trunc(iw*{options.mask_w/100}/2)*2):'
+            f'max(2\,trunc(ih*{options.mask_h/100}/2)*2):iw*{options.mask_x/100}:ih*{options.mask_y/100},'
+            "boxblur=luma_radius='min(6,min(w,h)/2)':luma_power=1:chroma_radius=0:chroma_power=0[masked];"
+            f'[clear][masked]overlay=main_w*{options.mask_x/100}:main_h*{options.mask_y/100}')
+    time_filter = prepared
+    y = f'(H-h)*{options.vertical_position}'
     if options.background == 'blur':
-        graph = (f'[0:v]{time_filter},split=2[bg][fg];'
-                 '[bg]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,'
+        graph = (f'{time_filter},split=2[bg][fg];'
+                 f'[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},'
                  'boxblur=20:2[back];'
-                 '[fg]scale=648:1080:force_original_aspect_ratio=decrease:force_divisible_by=2[front];'
-                 '[back][front]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1')
+                 f'[fg]scale={fw}:{fh}:force_original_aspect_ratio=decrease:force_divisible_by=2[front];'
+                 f'[back][front]overlay=(W-w)/2:{y}:shortest=1,setsar=1')
     else:
-        graph = (f'[0:v]{time_filter},scale=648:1080:force_original_aspect_ratio=decrease:'
-                 'force_divisible_by=2,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1')
+        graph = (f'{time_filter},scale={fw}:{fh}:force_original_aspect_ratio=decrease:'
+                 f'force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)*{options.vertical_position}:black,setsar=1')
     if options.color_adjust:
-        graph += f',eq=brightness={0.002 * version:.3f}:contrast={1 + 0.003 * version:.3f}:saturation=1.015'
+        graph += f',eq=brightness={options.brightness+0.002*version:.3f}:contrast={options.contrast+0.003*version:.3f}:saturation={options.saturation+0.015:.3f}'
+    if options.sharpen:
+        graph += f',unsharp=5:5:{options.sharpen}:5:5:0'
+    if options.denoise:
+        graph += f',hqdn3d={options.denoise}'
     if options.title and text_path:
-        graph += ',' + _title_filter(text_path).replace('fontsize=28', f'fontsize={min(28, 640 // max(1, len(options.title)))}')
+        graph += ',' + _title_filter(text_path, options)
+    if options.watermark_path:
+        x, y = _position(options.watermark_position, 'overlay_w', 'overlay_h', 'main_w', 'main_h')
+        graph += (f'[basev];[1:v]scale={int(width*options.watermark_scale)}:-1,format=rgba,'
+                  f'colorchannelmixer=aa={options.watermark_opacity}[wm];[basev][wm]overlay={x}:{y}:shortest=1')
     return graph + ',format=yuv420p[outv]'
+
+
+def build_audio_graph(options, metadata, duration):
+    original = f'asetpts=PTS-STARTPTS,atempo={options.speed},volume={options.original_volume}'
+    if options.audio_mode not in {'mix', 'replace'}:
+        return '', original, None
+    music_index = 2 if options.watermark_path else 1
+    graph = (f';[{music_index}:a:0]atrim=duration={duration},asetpts=PTS-STARTPTS,'
+             f'volume={options.music_volume}[music]')
+    if options.audio_mode == 'mix' and metadata.get('audio'):
+        graph += f';[0:a:0]{original},atrim=duration={duration}[voice];[voice][music]amix=inputs=2:duration=longest:normalize=0[outa]'
+    else:
+        graph += ';[music]anull[outa]'
+    return graph, None, '[outa]'
 
 
 def generate_variants(items, output_root, options, *, progress=None, should_stop=None):
@@ -170,11 +284,21 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
                         text_path = Path(work) / 'title.txt'
                         text_path.write_text(options.title, encoding='utf-8')
+                        duration = clip_duration / options.speed
+                        audio_graph, audio_filter, audio_label = build_audio_graph(options, source_metadata, duration)
+                        extra = {}
+                        if options.watermark_path:
+                            extra['image_overlay_path'] = options.watermark_path
+                        if options.audio_mode in {'mix', 'replace'}:
+                            extra.update(background_audio_path=options.music_path, audio_output_label=audio_label)
+                        if options.audio_mode == 'mute':
+                            extra['mute_audio'] = True
                         metadata = transcode_for_upload_bitrate(
-                            source, target, video_filter=build_video_filter(options, version, text_path),
-                            audio_filter=f'asetpts=PTS-STARTPTS,atempo={options.speed}',
+                            source, target, video_filter=build_video_filter(options, version, text_path, source_metadata) + audio_graph,
+                            audio_filter=audio_filter,
                             clip_start=options.trim_start, clip_duration=clip_duration,
                             output_duration=clip_duration / options.speed, should_stop=should_stop,
+                            **extra,
                             progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
                                                              'video_id': item['video_id']})) if progress else None,
                         )

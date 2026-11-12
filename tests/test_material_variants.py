@@ -3,11 +3,54 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.material_variants import VariantOptions, generate_variants, validate_clip_ranges
+from src.material_variants import VariantOptions, generate_variants, validate_clip_ranges, build_video_filter
 from src.media import FFmpegCancelled, probe, run
 
 
 class MaterialVariantTests(unittest.TestCase):
+    def test_extended_micro_filters_watermark_music_mask_and_mute_render_real_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, image, music = root/'source.mp4', root/'watermark.png', root/'music.wav'
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=30:duration=4',
+                 '-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-c:a','aac','-shortest',str(source)])
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','color=red:size=64x64','-frames:v','1',str(image)])
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','sine=frequency=880:duration=1',str(music)])
+            item = {'video_id':'extended','path':str(source),'drama':'扩展测试'}
+            cases = [VariantOptions(output_width=1280,output_height=720,mirror=True,rotation=90,
+                        crop_percent=2,sharpen=.3,denoise=1,output_fps=24,drop_every=25,
+                        title='测试标题',title_position='bottom',watermark_path=str(image),
+                        audio_mode='mix',music_path=str(music),mask_mode='cover',mask_x=5,mask_y=5),
+                     VariantOptions(audio_mode='mute',mask_mode='blur',mask_x=5,mask_y=5,
+                                    rotation=90,mask_w=1,mask_h=1),
+                     VariantOptions(audio_mode='replace',music_path=str(music),background='black',output_fps=25)]
+            for options in cases:
+                result = generate_variants([item], root/'out', options)
+                self.assertFalse(result['failed'], result['failed'])
+                meta = result['outputs'][0]['metadata']
+                self.assertEqual((meta['width'],meta['height']), (options.output_width,options.output_height))
+                self.assertEqual(meta['audio'], options.audio_mode!='mute')
+                self.assertLess(abs(meta['duration']-(4-.3)/1.02), .15)
+                self.assertGreater(meta['video_bitrate_bps'],3_500_000)
+                self.assertLessEqual(meta['video_bitrate_bps'],5_000_000)
+                if options.output_fps:
+                    self.assertEqual(meta['frame_rate'],options.output_fps)
+
+    def test_extended_options_validate_and_build_real_filters(self):
+        options = VariantOptions(output_width=1280, output_height=720, foreground_scale=.85,
+            vertical_position=.25, mirror=True, rotation=90, crop_percent=2,
+            brightness=.02, contrast=1.05, saturation=1.1, sharpen=.3, denoise=2,
+            output_fps=24, drop_every=30, title='示例', title_position='bottom', title_size=32,
+            mask_mode='cover', mask_x=5, mask_y=5, mask_w=15, mask_h=10).validate()
+        graph = build_video_filter(options, text_path=Path('title.txt'), source_metadata={'width': 1920, 'height': 1080, 'frame_rate': 30})
+        for expected in ('hflip', 'transpose=1', 'crop=', 'drawbox=', 'unsharp=', 'hqdn3d=', 'fps=24', '1280:720'):
+            self.assertIn(expected, graph)
+        for kwargs in ({'output_width': 721}, {'foreground_scale': 1.1}, {'rotation': 45},
+                       {'drop_every': 1}, {'mask_mode': 'cover', 'mask_x': 95, 'mask_w': 20}, {'title_position': 'bad'},
+                       {'audio_mode': 'replace'}, {'brightness': float('nan')}):
+            with self.assertRaises(ValueError):
+                VariantOptions(**kwargs).validate()
+
     def test_invalid_options_and_clip_ranges_are_rejected(self):
         for kwargs in ({'speed': 0}, {'variants': 0}, {'trim_start': -1}, {'background': 'bad'}):
             with self.assertRaises(ValueError):

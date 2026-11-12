@@ -255,6 +255,10 @@ def transcode_for_upload_bitrate(
     clip_start=0,
     clip_duration=None,
     output_duration=None,
+    image_overlay_path=None,
+    background_audio_path=None,
+    audio_output_label=None,
+    mute_audio=False,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -264,6 +268,11 @@ def transcode_for_upload_bitrate(
     if should_stop and should_stop():
         raise FFmpegCancelled("已停止码率提升")
     source_metadata = probe(source_path)
+    if (image_overlay_path or background_audio_path) and (not video_filter or not output_duration):
+        raise ValueError('附加素材需要完整滤镜和明确的输出时长')
+    for path in (image_overlay_path, background_audio_path):
+        if path and not Path(path).is_file():
+            raise ValueError('附加图片或音频文件不存在')
     budget_duration = output_duration if output_duration is not None else source_metadata.get("duration")
     size_limited_target_kbps = target_bitrate_for_upload_size(
         budget_duration,
@@ -291,11 +300,17 @@ def transcode_for_upload_bitrate(
         if clip_duration is not None:
             command += ["-t", str(clip_duration)]
         command += ["-i", str(source_path)]
+        if image_overlay_path:
+            command += ['-loop', '1', '-i', str(image_overlay_path)]
+        if background_audio_path:
+            command += ['-stream_loop', '-1', '-i', str(background_audio_path)]
         if video_filter:
             command += ["-filter_complex", video_filter, "-map", "[outv]"]
         else:
             command += ["-map", "0:v:0"]
-        command += ["-map", "0:a:0?" if video_filter else "0:a?", "-c:v", encoder]
+        if not mute_audio:
+            command += ['-map', audio_output_label or ('0:a:0?' if video_filter else '0:a?')]
+        command += ['-c:v', encoder]
         if encoder == "libx264":
             command += ["-preset", "veryfast", "-pix_fmt", "yuv420p"]
         elif encoder == "h264_nvenc":
@@ -312,10 +327,16 @@ def transcode_for_upload_bitrate(
         ]
         if encoder == "libx264":
             command += ["-x264-params", "nal-hrd=cbr:filler=1"]
-        if audio_filter and source_metadata.get("audio"):
+        if mute_audio:
+            command += ['-an']
+        elif audio_output_label:
+            command += ['-c:a', 'aac', '-b:a', '128k']
+        elif audio_filter and source_metadata.get("audio"):
             command += ["-af", audio_filter, "-c:a", "aac", "-b:a", "128k"]
         else:
             command += ["-c:a", "copy"]
+        if image_overlay_path or background_audio_path:
+            command += ['-t', str(output_duration)]
         return command + ["-movflags", "+faststart", str(output_path)]
 
     started_at = time.monotonic()

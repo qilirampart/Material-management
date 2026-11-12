@@ -4,13 +4,14 @@ from collections import defaultdict
 from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QLineEdit,
-    QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QTabWidget, QScrollArea,
+    QSpinBox, QScrollArea,
     QProgressBar, QTableWidgetItem)
 from src.ui_design import card, label, btn, Background
 from src.desktop_widgets import local_open
 from src.variant_dialog import VariantDialog
 from src.material_variants import VariantOptions, generate_variants
 from src.recreation import RecreationBatch
+from src.micro_settings import MicroSettings
 
 
 class ProcessingWorkbench(QWidget):
@@ -58,35 +59,11 @@ class ProcessingWorkbench(QWidget):
         fields.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(self.options_widget)
         right.addWidget(scroll, 1)
-        self.background = QComboBox()
-        self.background.addItem('模糊背景 · 完整保留前景', 'blur')
-        self.background.addItem('黑边背景 · 完整保留前景', 'black')
-        self.trim_start = VariantDialog._decimal(0, 60, .15, ' 秒')
-        self.trim_end = VariantDialog._decimal(0, 60, .15, ' 秒')
-        self.speed = VariantDialog._decimal(.8, 1.2, 1.02, ' 倍')
-        self.color = QCheckBox('轻度调色；多版本使用不同强度')
-        self.color.setChecked(True)
-        self.title = QLineEdit()
-        self.title.setMaxLength(40)
-        self.title.setPlaceholderText('可选，一行标题')
         if mode == 'micro':
-            tabs = QTabWidget()
-            picture, time, text = QWidget(), QWidget(), QWidget()
-            p, t, x = QFormLayout(picture), QFormLayout(time), QFormLayout(text)
-            p.addRow('竖屏背景', self.background)
-            p.addRow('输出尺寸', label('720 × 1280'))
-            p.addRow(self.color)
-            t.addRow('去掉开头', VariantDialog._stepper(self.trim_start, '去掉开头'))
-            t.addRow('去掉结尾', VariantDialog._stepper(self.trim_end, '去掉结尾'))
-            t.addRow('播放速度', VariantDialog._stepper(self.speed, '播放速度'))
-            t.addRow(label('保持音高；剧情取舍由人工确认。'))
-            x.addRow('顶部文字', self.title)
-            x.addRow('音频', label('保留原声'))
-            tabs.addTab(picture, '画面')
-            tabs.addTab(time, '时长与速度')
-            tabs.addTab(text, '文字与声音')
-            tabs.setMinimumHeight(240)
-            fields.addWidget(tabs)
+            self.micro_settings = MicroSettings()
+            fields.addWidget(self.micro_settings)
+            for name in ('background','trim_start','trim_end','speed','color','title'):
+                setattr(self,name,getattr(self.micro_settings,name,None) or self.micro_settings.fields.get(name))
         else:
             fields.addWidget(label('保留原音画，不重新编码。生成独立副本，原视频不变。'))
         form = QFormLayout()
@@ -100,7 +77,7 @@ class ProcessingWorkbench(QWidget):
         fields.addLayout(form)
         fields.addWidget(label('按来源批次与剧名归档；成品自动进入上传页。'))
         if mode == 'micro':
-            fields.addWidget(label('视频码率 >3500 且 ≤5000 kbps · 文件 ≤510 MB'))
+            fields.addWidget(label('输出尺寸按画面设置 · 视频 >3500 且 ≤5000 kbps · 文件 ≤510 MB'))
         fields.addStretch()
         self.sample_button = btn('生成一条样片', lambda: self.start(sample=True))
         if mode == 'micro':
@@ -142,10 +119,9 @@ class ProcessingWorkbench(QWidget):
         self.owner._update_checked_count(self.table)
 
     def options(self, sample):
+        values = self.micro_settings.values() if self.mode == 'micro' else {}
         return VariantOptions(mode=self.mode, uploader=self.uploader.text().strip(),
-            variants=1 if sample else self.count.value(), background=self.background.currentData(),
-            trim_start=self.trim_start.value(), trim_end=self.trim_end.value(),
-            speed=self.speed.value(), color_adjust=self.color.isChecked(), title=self.title.text().strip()).validate()
+            variants=1 if sample else self.count.value(), **values).validate()
 
     def start(self, checked=False, *, sample=False):
         if self.owner.work_in_progress():
