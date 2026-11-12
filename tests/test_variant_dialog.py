@@ -68,4 +68,7 @@ class VariantDialogTests(unittest.TestCase):
             plan = build_upload_plan([dict(row, record=record)], drama_name='测试剧',
                                      drama_platform_id='4100', director='王俨', uploader_initials='PSK')
             self.assertTrue(plan[0]['items'][0]['upload_name'].startswith('APP-繁花-王俨-微创新-测试剧-'))
+            continued = build_upload_plan([dict(row, record=record)], drama_name='测试剧',
+                drama_platform_id='4100', director='王俨', uploader_initials='PSK', sequence_start=51)
+            self.assertTrue(continued[0]['items'][0]['upload_name'].endswith('-51.mp4'))
             page.close()

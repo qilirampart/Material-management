@@ -131,6 +131,7 @@ def build_upload_plan(
     uploader_initials,
     upload_date=None,
     batch_limit=UPLOAD_BATCH_LIMIT,
+    sequence_start=1,
 ):
     drama_name = safe_filename_part(drama_name)
     drama_platform_id = str(drama_platform_id).strip()
@@ -144,10 +145,12 @@ def build_upload_plan(
         raise ValueError("请填写上传人缩写")
     if not 1 <= batch_limit <= UPLOAD_BATCH_LIMIT:
         raise ValueError("单批上传数量必须在 1 到 50 之间")
+    if not isinstance(sequence_start, int) or sequence_start < 1:
+        raise ValueError('上传起始序号必须是正整数')
 
     upload_date = upload_date or date.today()
     items = []
-    for sequence, material in enumerate(materials, 1):
+    for sequence, material in enumerate(materials, sequence_start):
         record = material.get("record", {})
         enhanced = Path(record.get("bitrate_enhanced_path", ""))
         enhanced_metadata = record.get("bitrate_enhanced_metadata", {})

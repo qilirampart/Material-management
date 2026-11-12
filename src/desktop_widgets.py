@@ -463,6 +463,10 @@ class UploadConfigDialog(QDialog):
 
 
 class PlatformPage(QWidget):
+    files_ready = Signal(object)
+    operation_failed = Signal(str)
+    staging_complete = Signal()
+    activity_finished = Signal()
     def __init__(self, config, *, workflow='original'):
         super().__init__()
         self.config = config
@@ -517,6 +521,7 @@ class PlatformPage(QWidget):
                                else '在软件内登录公司平台，准备并上传检测通过的素材'))
         body = QHBoxLayout()
         browser_card, box = card()
+        self.browser_card = browser_card
         row = QHBoxLayout()
         self.back_button = button('←', lambda: self.navigate_platform('back'))
         self.forward_button = button('→', lambda: self.navigate_platform('forward'))
@@ -553,6 +558,7 @@ class PlatformPage(QWidget):
         box.addWidget(self.status)
         body.addWidget(browser_card, 1)
         preparation, box = card('上传准备')
+        self.preparation_card = preparation
         preparation.setMaximumWidth(340)
         box.addWidget(label('当前勾选', 'section'))
         self.material_summary = label('0 条可上传 · 请在素材任务中勾选')
@@ -933,6 +939,7 @@ class PlatformPage(QWidget):
                 drama_platform_id=self.drama_id.currentText(),
                 director=self.director.text(),
                 uploader_initials=self.uploader_initials.text(),
+                sequence_start=getattr(self, 'upload_sequence_start', 1),
             )
             staging = self.batch_folder / 'upload-staging'
             remember_upload_preferences(
@@ -947,7 +954,7 @@ class PlatformPage(QWidget):
             self.preview.setText(str(exc))
             self.upload_config_dialog.message.setText(str(exc))
             self.fill_button.setEnabled(False)
-            return
+            return False
         self.upload_config_dialog.accept()
         self.prepare_button.setEnabled(False)
         self.fill_button.setEnabled(False)
@@ -966,7 +973,9 @@ class PlatformPage(QWidget):
         self.staging_task.failed.connect(
             lambda message, current=generation: self.staging_failed(message, current)
         )
+        self.staging_task.finished.connect(self.activity_finished.emit)
         self.staging_task.start()
+        return True
 
     def apply_remembered_director(self, platform_id):
         drama = self.upload_preferences['dramas'].get(self.drama_name.text().strip(), {})
@@ -998,6 +1007,7 @@ class PlatformPage(QWidget):
             f'已生成 {len(self.upload_batches)} 个批次{bitrate_message}\n文件名示例：{first}'
         )
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
+        self.staging_complete.emit()
 
     def staging_failed(self, message, generation=None):
         if generation is not None and generation != self.materials_generation:
@@ -1006,6 +1016,7 @@ class PlatformPage(QWidget):
         self.preview.setText(message)
         self.prepare_button.setEnabled(bool(self.materials and self.batch_folder))
         self.fill_button.setEnabled(False)
+        self.operation_failed.emit(message)
 
     def fill_platform_form(self):
         if not self.browser and not self.edge_target_ws_url:
@@ -1049,6 +1060,7 @@ class PlatformPage(QWidget):
             lambda result: self._platform_fill_finished(batch, attempt, result, generation)
         )
         self.edge_fill_task.failed.connect(self._edge_files_failed)
+        self.edge_fill_task.finished.connect(self.activity_finished.emit)
         self.edge_fill_task.start()
 
     def _platform_fill_finished(self, batch, attempt, result, generation=None):
@@ -1083,6 +1095,7 @@ class PlatformPage(QWidget):
             self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
         else:
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
+            self.operation_failed.emit(self.status.text())
 
     def _start_platform_file_selection(self, batch, attempt, generation=None):
         if generation is not None and generation != self.materials_generation:
@@ -1124,6 +1137,7 @@ class PlatformPage(QWidget):
                 batch, attempt, message, generation
             )
         )
+        self.edge_files_task.finished.connect(self.activity_finished.emit)
         self.edge_files_task.start()
 
     def _platform_file_selection_failed(self, batch, attempt, message, generation=None):
@@ -1155,10 +1169,12 @@ class PlatformPage(QWidget):
             self.preview.text()
             + f'\n平台已显示 {preview_count} 个视频预览：{visible_name}{more}；未保存草稿，未提交审核。'
         )
+        self.files_ready.emit(result)
 
     def _edge_files_failed(self, message):
         self.fill_button.setEnabled(True)
         self.status.setText(f'平台填写失败：{message}')
+        self.operation_failed.emit(message)
 
     def open_platform(self):
         url = QUrl(self.address.text().strip())

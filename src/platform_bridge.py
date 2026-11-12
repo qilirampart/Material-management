@@ -24,7 +24,7 @@ def parse_json_result(value):
 
 def build_read_upload_selection_script():
     return """(() => {
-  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const mainFrame = [...document.querySelectorAll('iframe')].find(f => new URL(f.src).pathname === '/market-admin/material/material');
   const main = mainFrame?.contentDocument;
   if (!main) return {ok:false, code:'MATERIAL_PAGE_MISSING', message:'请先进入素材管理页面'};
   const uploadFrame = [...main.querySelectorAll('iframe')]
@@ -68,7 +68,7 @@ def build_read_upload_selection_script():
 
 def build_upload_file_input_script():
     return """(() => {
-  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const mainFrame = [...document.querySelectorAll('iframe')].find(f => new URL(f.src).pathname === '/market-admin/material/material');
   const main = mainFrame?.contentDocument;
   const uploadFrame = main ? [...main.querySelectorAll('iframe')]
     .filter(frame => frame.src.includes('material_add')).at(-1) : null;
@@ -95,7 +95,7 @@ def build_upload_form_script(*, director, drama_name, drama_platform_id, file_co
     }, ensure_ascii=False)
     return f"""(() => {{
   const data = {payload};
-  const mainFrame = document.querySelector('#iframe9, iframe[src*="/material/material"]');
+  const mainFrame = [...document.querySelectorAll('iframe')].find(f => new URL(f.src).pathname === '/market-admin/material/material');
   const main = mainFrame?.contentDocument;
   if (!main) return {{ok:false, code:'MATERIAL_PAGE_MISSING', message:'请先进入素材管理页面'}};
   const uploadFrame = [...main.querySelectorAll('iframe')]

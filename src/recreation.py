@@ -101,6 +101,10 @@ class RecreationBatch:
             if not isinstance(item, dict) or not all(isinstance(item.get(key), str)
                     for key in ('path', 'drama', 'mode')) or not isinstance(item.get('metadata'), dict):
                 raise ValueError('批次成品信息不完整')
+        uploads = state.get('uploads', [])
+        if not isinstance(uploads, list) or any(not isinstance(x, dict) or not isinstance(x.get('files'), list)
+                or any(not isinstance(p, str) for p in x['files']) for x in uploads):
+            raise ValueError('批次上传记录不完整')
         batch = cls(folder, state)
         interrupted = False
         if recover_interrupted and state.get('collection_status') == 'in_progress':

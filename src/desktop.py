@@ -239,8 +239,8 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.settings)
         self.pages.addWidget(scroll)
-        from src.recreation_page import RecreationPage
-        self.recreation = RecreationPage(self.config, restore=restore)
+        from src.recreation_workflow import RecreationWorkflowPage
+        self.recreation = RecreationWorkflowPage(self.config, restore=restore)
         self.recreation.task_finished.connect(lambda: QTimer.singleShot(0, self.close) if self.close_after else None)
         self.add_page(self.recreation)
         self.navigation.currentRowChanged.connect(self.change_page)
@@ -1338,11 +1338,11 @@ class MainWindow(QMainWindow):
             self.review.splitter.setOrientation(Qt.Vertical if self.width() < 1150 else Qt.Horizontal)
 
     def closeEvent(self, event):
-        if self.has_active_background_tasks():
-            if self.recreation.collection_task and self.recreation.collection_task.isRunning():
+        if self.has_active_background_tasks() or self.recreation.work_in_progress():
+            if self.recreation.work_in_progress():
                 self.close_after = True
-                self.recreation.stop_collection()
-                self.statusBar().showMessage('正在停止再创作采集或下载，保存进度后退出。')
+                self.recreation.request_stop_all()
+                self.statusBar().showMessage('正在停止再创作任务，保存进度后退出；平台已开始的上传可在网页查看。')
             elif (
                 self.bitrate_task and self.bitrate_task.isRunning()
                 and getattr(self.bitrate_task, 'supports_immediate_stop', False)

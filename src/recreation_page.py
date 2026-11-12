@@ -410,12 +410,13 @@ class RecreationPage(QWidget):
 
     def collection_result(self, result):
         if not self._sync_collection_state():
-            return
+            return False
         if 'count' in result:
             message = f"已找到 {result['count']} 条素材，可以下载全部或选中项"
         else:
             message = f"完成 {result['completed']} 条 · 失败 {result['failed']} 条 · 跳过 {result['skipped']} 条"
         self.message.setText(message + (' · 已停止' if result.get('stopped') else ''))
+        return True
 
     def collection_failed(self, message):
         if self._sync_collection_state():
