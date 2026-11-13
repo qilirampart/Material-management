@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, Q
 from pathlib import Path
 from copy import deepcopy
 from src.text_tracks_dialog import TextTracksDialog
+from src.region_editor import RegionEditorDialog
 from src.variant_dialog import VariantDialog
 from src.ui_design import label, btn
 from src.micro_presets import RECOMMENDED_NAME, RECOMMENDED, read_presets, write_presets, validate_settings
@@ -11,11 +12,13 @@ from src.material_variants import VariantOptions
 
 
 class MicroSettings(QWidget):
-    def __init__(self, *, presets_path=None):
+    def __init__(self, *, presets_path=None,region_source_provider=None):
         super().__init__()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.presets_path = Path(presets_path) if presets_path is not None else None
+        self.region_source_provider=region_source_provider
+        self.regions=[]
         self.presets = {}
         self.preset_combo = QComboBox()
         self.preset_combo.setToolTip('选择收藏即可应用全部创新参数；不改变视频列表。')
@@ -65,6 +68,18 @@ class MicroSettings(QWidget):
         self.mirror = QCheckBox('水平镜像')
         picture.addRow(self.mirror)
         self.number(picture,'四周裁边','crop_percent',0,15,0,' %',1,1,.5)
+        self.combo(picture,'裁剪方式','crop_mode',[('四周统一（原设置）','uniform'),('上下左右独立','edges')])
+        for key,title in [('crop_left','左侧裁边'),('crop_right','右侧裁边'),('crop_top','顶部裁边'),('crop_bottom','底部裁边')]:
+            self.number(picture,title,key,0,90,0,' %',1,2,.1)
+        self.crop_editor_button=btn('在原片上框选保留画面…',lambda:self.edit_regions('crop'))
+        self.crop_editor_button.setEnabled(region_source_provider is not None)
+        picture.addRow(self.crop_editor_button)
+        def crop_enabled():
+            independent=self.fields['crop_mode'].currentData()=='edges'
+            self.fields['crop_percent'].parentWidget().setEnabled(not independent)
+            for key in ('crop_left','crop_right','crop_top','crop_bottom'):self.fields[key].parentWidget().setEnabled(independent)
+        self.fields['crop_mode'].currentIndexChanged.connect(crop_enabled)
+        crop_enabled()
         picture.addRow(label('裁边、镜像可能影响字幕，请先看样片。'))
         self.combo(picture,'动态缩放','zoom_mode',[('关闭','none'),('缓慢推近','in'),('缓慢拉远','out'),('往返呼吸','pulse')])
         self.number(picture,'缩放幅度','zoom_amount',0,25,8,' %',100,0,1)
@@ -159,6 +174,10 @@ class MicroSettings(QWidget):
         audio.addRow(label('音乐不足会循环至视频结束。混音保留对白；仅背景音乐会去掉原声。'))
 
         region = self.page('区域')
+        self.region_editor_button=btn('原片多区域框选（0）…',lambda:self.edit_regions('regions'),True)
+        self.region_editor_button.setEnabled(region_source_provider is not None)
+        region.addRow(self.region_editor_button)
+        region.addRow(label('多区域基于原片，支持模糊／遮挡／修补。下方旧单区设置仍独立叠加。'))
         self.mask_mode=self.combo(region,'区域处理','mask_mode',[('不处理','none'),('局部模糊','blur'),('黑色遮挡','cover')])
         for title,key,low,high,value in [('左边距 X','mask_x',0,99,0),('上边距 Y','mask_y',0,99,0),
                                        ('区域宽度','mask_w',1,100,20),('区域高度','mask_h',1,100,10)]:
@@ -263,6 +282,8 @@ class MicroSettings(QWidget):
         self.drop_every.setValue(values['drop_every'] or 25)
         self.text_tracks=deepcopy(values['text_tracks'])
         self.tracks_button.setText(f'多文字轨（{len(self.text_tracks)}）…')
+        self.regions=deepcopy(values['regions'])
+        self.region_editor_button.setText(f'原片多区域框选（{len(self.regions)}）…')
         self.background_path.setText(values['background_path']);self.pip_path.setText(values['pip_path'])
         self.intro_path.setText(values['intro_path']);self.outro_path.setText(values['outro_path'])
         self.bookend_audio.setChecked(values['bookend_audio'])
@@ -291,6 +312,19 @@ class MicroSettings(QWidget):
         if dialog.exec()==QDialog.DialogCode.Accepted:
             self.text_tracks=deepcopy(dialog.tracks)
             self.tracks_button.setText(f'多文字轨（{len(self.text_tracks)}）…')
+        dialog.deleteLater()
+
+    def edit_regions(self,mode):
+        if self.region_source_provider is None:return
+        try:source=self.region_source_provider()
+        except ValueError as exc:self.preset_status.setText(str(exc));return
+        dialog=RegionEditorDialog(source,VariantOptions(**self.values()),self,draw_mode=mode)
+        if dialog.exec()==QDialog.DialogCode.Accepted:
+            self.regions=deepcopy(dialog.regions)
+            self.region_editor_button.setText(f'原片多区域框选（{len(self.regions)}）…')
+            self.fields['crop_mode'].setCurrentIndex(self.fields['crop_mode'].findData(dialog.crop_mode))
+            if dialog.crop_mode=='edges':
+                for key,value in dialog.edges.items():self.fields['crop_'+key].setValue(value)
         dialog.deleteLater()
 
     def apply_recommended(self):
@@ -391,6 +425,7 @@ class MicroSettings(QWidget):
             intro_path=self.intro_path.text().strip(),outro_path=self.outro_path.text().strip(),
             bookend_audio=self.bookend_audio.isChecked(),
             text_tracks=deepcopy(self.text_tracks),
+            regions=deepcopy(self.regions),
             randomize=self.randomize.isChecked(),random_seed=self.random_seed.value(),
             random_ranges={key:[a.value(),b.value()] for key,(enabled,a,b) in self.range_widgets.items() if enabled.isChecked()},
             resource_pools={key:w.text().strip() for key,w in self.pool_widgets.items() if w.text().strip()})

@@ -22,6 +22,7 @@ from src.media import (
 from src.upload import safe_filename_part
 from src.text_tracks import normalize_track,timing_expression,motion_coordinates,SCROLLS
 from src.bookends import TRANSITIONS,plan_bookends,compose_bookends
+from src.region_effects import normalize_region,validate_crop,crop_filter,region_chain
 
 
 class ClipSelectionProvider(Protocol):
@@ -115,6 +116,12 @@ class VariantOptions:
     transition: str = 'cut'
     transition_duration: float = .3
     bookend_audio: bool = True
+    regions: list = field(default_factory=list)
+    crop_mode: str = 'uniform'
+    crop_left: float = 0
+    crop_right: float = 0
+    crop_top: float = 0
+    crop_bottom: float = 0
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -153,6 +160,9 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            validate_crop(self)
+            if not isinstance(self.regions,list) or len(self.regions)>6:raise ValueError('最多添加 6 个原片处理区域')
+            for region in self.regions:normalize_region(region)
             if self.transition not in TRANSITIONS or not isinstance(self.bookend_audio,bool):
                 raise ValueError('片头尾转场或声音设置无效')
             for value,low,high in ((self.intro_duration,.5,30),(self.outro_duration,.5,30),(self.transition_duration,.1,2)):
@@ -310,7 +320,8 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
     meta = source_metadata or {}
     width, height = options.output_width, options.output_height
     fw, fh = int(width*options.foreground_scale)//2*2, int(height*options.foreground_scale)//2*2
-    filters = [f'setpts=(PTS-STARTPTS)/{options.speed}']
+    filters = [f'setpts=(PTS-STARTPTS)/{options.speed}'+region_chain(options.regions,meta,timeline_offset)]
+    if options.crop_mode=='edges':filters.append(crop_filter(options))
     if options.drop_every:
         filters.append(f"select='not(eq(mod(n+1,{options.drop_every}),0))'")
     if options.output_fps or options.drop_every:
@@ -319,7 +330,7 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
         filters.append('hflip')
     if options.rotation:
         filters.append({90: 'transpose=1', 180: 'hflip,vflip', 270: 'transpose=2'}[options.rotation])
-    if options.crop_percent:
+    if options.crop_mode=='uniform' and options.crop_percent:
         ratio = 1-options.crop_percent/50
         filters.append(f'crop=trunc(iw*{ratio}/2)*2:trunc(ih*{ratio}/2)*2')
     prepared = '[0:v]' + ','.join(filters)

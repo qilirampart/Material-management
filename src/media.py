@@ -213,11 +213,15 @@ def probe(path):
     total_bitrate = int(_number(info.get("format", {}).get("bit_rate")))
     if total_bitrate <= 0 and duration > 0:
         total_bitrate = round(file_size * 8 / duration)
+    rotation=next((s['rotation'] for s in video.get('side_data_list',[]) if 'rotation' in s),video.get('tags',{}).get('rotate',0))
+    swapped=abs(abs(_number(rotation))%180-90)<.01
     return {
         "duration": duration,
         "audio": any(s.get("codec_type") == "audio" for s in streams),
         "width": video["width"],
         "height": video["height"],
+        "display_width":video['height'] if swapped else video['width'],
+        "display_height":video['width'] if swapped else video['height'],
         "file_size_bytes": file_size,
         "total_bitrate_bps": total_bitrate,
         "video_bitrate_bps": int(_number(video.get("bit_rate"))),

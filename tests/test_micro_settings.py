@@ -2,7 +2,7 @@ import os
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtWidgets import QApplication
 from src.micro_settings import MicroSettings
@@ -105,6 +105,8 @@ class MicroSettingsTests(unittest.TestCase):
             path=Path(folder)/'presets.json'
             panel=MicroSettings(presets_path=path)
             values=dict(RECOMMENDED,zoom_mode='pulse',zoom_amount=.12,zoom_period=4,
+                crop_mode='edges',crop_left=5,crop_right=10,crop_top=2,crop_bottom=3,
+                regions=[{'mode':'cover','x':10,'y':10,'w':15,'h':20}],
                 intro_duration=2,outro_duration=4,transition='wipeleft',transition_duration=.4,bookend_audio=False,
                 pip_scale=.3,pip_x=.5,pip_y=.75,pip_opacity=.7,randomize=True,random_seed=22,
                 random_ranges={'foreground_scale':[.6,.9],'speed':[1,1.1],'contrast':[1.1,1.3]},
@@ -146,4 +148,12 @@ class MicroSettingsTests(unittest.TestCase):
         self.assertEqual(panel.values()['audio_mode'],'mix')
         panel.mask_mode.setCurrentIndex(1)
         self.assertTrue(panel.fields['mask_x'].isEnabled())
+        panel.fields['crop_left'].setValue(12)
+        panel.region_source_provider=lambda:'source.mp4'
+        dialog=Mock(regions=[{'mode':'cover','x':10,'y':10,'w':20,'h':20}],
+            crop_mode='uniform',edges={'left':0,'right':0,'top':0,'bottom':0})
+        dialog.exec.return_value=1
+        with patch('src.micro_settings.RegionEditorDialog',return_value=dialog):panel.edit_regions('regions')
+        self.assertEqual(panel.values()['crop_left'],12)  # Editing regions must not reset inactive crop settings.
+        self.assertEqual(len(panel.regions),1)
         panel.close()

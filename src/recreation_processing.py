@@ -66,7 +66,8 @@ class ProcessingWorkbench(QWidget):
         scroll.setWidget(self.options_widget)
         right.addWidget(scroll, 1)
         if mode == 'micro':
-            self.micro_settings = MicroSettings(presets_path=Path(owner.preferences_path).parent / 'micro-presets.json')
+            self.micro_settings = MicroSettings(presets_path=Path(owner.preferences_path).parent / 'micro-presets.json',
+                region_source_provider=self.region_source)
             fields.addWidget(self.micro_settings)
             for name in ('background','trim_start','trim_end','speed','color','title'):
                 setattr(self,name,getattr(self.micro_settings,name,None) or self.micro_settings.fields.get(name))
@@ -149,6 +150,13 @@ class ProcessingWorkbench(QWidget):
         values = self.micro_settings.values() if self.mode == 'micro' else {}
         return VariantOptions(mode=self.mode, uploader=self.uploader.text().strip(),
             variants=1 if sample else self.count.value(), **values).validate()
+
+    def region_source(self):
+        rows=self.owner.checked_rows(self.table)
+        index=rows[0] if rows else max(0,self.table.currentRow())
+        if index>=len(self.items) or not self.items[index].get('path') or not Path(self.items[index]['path']).is_file():
+            raise ValueError('请先导入一条本地可用视频，再打开原片框选')
+        return self.items[index]['path']
 
     def start(self, checked=False, *, sample=False, preview=False):
         if self.owner.work_in_progress():
