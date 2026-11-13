@@ -24,6 +24,7 @@ from src.upload import safe_filename_part
 from src.text_tracks import normalize_track,timing_expression,motion_coordinates,SCROLLS
 from src.bookends import TRANSITIONS,plan_bookends,compose_bookends
 from src.subtitle_cover import validate_assets,prepare_subtitles,subtitle_filter,prepare_cover
+from src.picture_effects import validate_picture_effects,picture_effect_chain,grid_chain
 from src.region_effects import normalize_region,validate_crop,crop_filter,region_chain
 
 
@@ -140,6 +141,12 @@ class VariantOptions:
     cover_time: float = 0
     cover_duration: float = .2
     cover_fit: str = 'contain'
+    grid_layout: str = 'none'
+    grid_fit: str = 'contain'
+    picture_style: str = 'original'
+    vignette: float = 0
+    border_width: int = 0
+    border_color: str = 'FFFFFF'
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -178,6 +185,7 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            validate_picture_effects(self)
             validate_assets(self)
             validate_crop(self)
             if not isinstance(self.regions,list) or len(self.regions)>6:raise ValueError('最多添加 6 个原片处理区域')
@@ -362,7 +370,7 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
             f'max(2\,trunc(ih*{options.mask_h/100}/2)*2):iw*{options.mask_x/100}:ih*{options.mask_y/100},'
             "boxblur=luma_radius='min(6,min(w,h)/2)':luma_power=1:chroma_radius=0:chroma_power=0[masked];"
             f'[clear][masked]overlay=main_w*{options.mask_x/100}:main_h*{options.mask_y/100}')
-    time_filter = prepared
+    time_filter = prepared+grid_chain(options)
     y = f'(H-h)*{options.vertical_position}'
     indexes=extra_input_indexes(options)
     if options.background_path:
@@ -393,6 +401,7 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
                'pulse':f'(1-cos(2*PI*{time}/{options.zoom_period}))/2'}[options.zoom_mode]
         graph+=(f",fps={fps},zoompan=z='1+{options.zoom_amount}*({phase})':"
                 f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:fps={fps}:s={width}x{height}")
+    graph+=picture_effect_chain(options)
     if options.pip_path:
         graph+=(f'[basepip];[{indexes["pip_path"]}:v]setpts=PTS-STARTPTS,'
             f'scale={int(width*options.pip_scale)//2*2}:{int(height*options.pip_scale)//2*2}:'

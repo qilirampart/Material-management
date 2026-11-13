@@ -5,6 +5,8 @@ from pathlib import Path
 from copy import deepcopy
 from src.subtitle_cover_dialog import SubtitleCoverDialog
 from src.subtitle_cover import SUBTITLE_DEFAULTS
+from src.picture_effects import PICTURE_DEFAULTS
+from src.picture_effects_dialog import PictureEffectsDialog
 from src.text_tracks_dialog import TextTracksDialog
 from src.region_editor import RegionEditorDialog
 from src.variant_dialog import VariantDialog
@@ -22,6 +24,7 @@ class MicroSettings(QWidget):
         self.region_source_provider=region_source_provider
         self.regions=[]
         self.subtitle_cover=dict(SUBTITLE_DEFAULTS)
+        self.picture_effects=dict(PICTURE_DEFAULTS)
         self.presets = {}
         self.preset_combo = QComboBox()
         self.preset_combo.setToolTip('选择收藏即可应用全部创新参数；不改变视频列表。')
@@ -46,6 +49,8 @@ class MicroSettings(QWidget):
         outer.addWidget(self.tabs)
         self.fields = {}
         picture = self.page('画面')
+        self.picture_effects_button=btn('分屏与画面效果…',self.edit_picture_effects)
+        picture.addRow(self.picture_effects_button)
         preset = QComboBox()
         self.resolution_preset = preset
         for name, size in [('竖屏 720×1280', (720,1280)), ('竖屏 1080×1920', (1080,1920)),
@@ -272,6 +277,8 @@ class MicroSettings(QWidget):
         values=validate_settings(values)
         self.subtitle_cover={k:values[k] for k in SUBTITLE_DEFAULTS}
         self.update_subtitle_cover_label()
+        self.picture_effects={k:values[k] for k in PICTURE_DEFAULTS}
+        self.update_picture_effects_label()
         size=(values['output_width'],values['output_height'])
         index=next((i for i in range(self.resolution_preset.count())
                     if self.resolution_preset.itemData(i)==size),self.resolution_preset.count()-1)
@@ -313,6 +320,18 @@ class MicroSettings(QWidget):
                  if values[key] and not Path(values[key]).is_file()]
         if missing:
             self.preset_status.setText('参数已应用；引用文件已移动，请重新选择。')
+
+    def update_picture_effects_label(self):
+        active=(self.picture_effects['grid_layout']!='none' or self.picture_effects['picture_style']!='original'
+                or self.picture_effects['vignette']>0 or self.picture_effects['border_width']>0)
+        self.picture_effects_button.setText('分屏与画面效果'+('（已启用）' if active else '')+'…')
+
+    def edit_picture_effects(self):
+        dialog=PictureEffectsDialog(self.picture_effects,self)
+        if dialog.exec()==QDialog.DialogCode.Accepted:
+            self.picture_effects=dict(dialog.settings)
+            self.update_picture_effects_label()
+        dialog.deleteLater()
 
     def update_subtitle_cover_label(self):
         active=[]
@@ -450,4 +469,5 @@ class MicroSettings(QWidget):
             random_ranges={key:[a.value(),b.value()] for key,(enabled,a,b) in self.range_widgets.items() if enabled.isChecked()},
             resource_pools={key:w.text().strip() for key,w in self.pool_widgets.items() if w.text().strip()})
         values.update(self.subtitle_cover)
+        values.update(self.picture_effects)
         return values
