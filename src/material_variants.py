@@ -6,6 +6,7 @@ import math
 import os
 import re
 import random
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -22,6 +23,7 @@ from src.media import (
 from src.upload import safe_filename_part
 from src.text_tracks import normalize_track,timing_expression,motion_coordinates,SCROLLS
 from src.bookends import TRANSITIONS,plan_bookends,compose_bookends
+from src.subtitle_cover import validate_assets,prepare_subtitles,subtitle_filter,prepare_cover
 from src.region_effects import normalize_region,validate_crop,crop_filter,region_chain
 
 
@@ -123,6 +125,22 @@ class VariantOptions:
     crop_top: float = 0
     crop_bottom: float = 0
 
+    subtitle_path: str = ''
+    subtitle_encoding: str = 'utf-8'
+    subtitle_timing: str = 'source'
+    subtitle_shift: float = 0
+    subtitle_keep_ass_style: bool = True
+    subtitle_size: int = 32
+    subtitle_color: str = 'FFFFFF'
+    subtitle_outline: float = 2
+    subtitle_margin: int = 36
+    subtitle_position: str = 'bottom'
+    cover_mode: str = 'none'
+    cover_path: str = ''
+    cover_time: float = 0
+    cover_duration: float = .2
+    cover_fit: str = 'contain'
+
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
             raise ValueError('不支持的处理方式或背景')
@@ -160,6 +178,7 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            validate_assets(self)
             validate_crop(self)
             if not isinstance(self.regions,list) or len(self.regions)>6:raise ValueError('最多添加 6 个原片处理区域')
             for region in self.regions:normalize_region(region)
@@ -418,7 +437,7 @@ def build_audio_graph(options, metadata, duration,*,timeline_offset=0,total_dura
 
 
 def _render_micro(source, target, options, metadata, clip_start, clip_duration,
-                  *, version=1, progress=None, should_stop=None, timeline_offset=0,text_context=None):
+                  *, version=1, progress=None, should_stop=None, timeline_offset=0,text_context=None,cover_offset=0):
     with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
         text_path = Path(work) / 'title.txt'
         text_path.write_text(options.title, encoding='utf-8')
@@ -435,6 +454,9 @@ def _render_micro(source, target, options, metadata, clip_start, clip_duration,
         audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration,
             timeline_offset=timeline_offset,total_duration=(metadata['duration']-options.trim_start-options.trim_end)/options.speed)
         video_graph=build_video_filter(render_options, version, text_path, metadata,timeline_offset,track_paths)
+        if options.subtitle_path:
+            subtitles,_=prepare_subtitles(options,work,clip_start,timeline_offset,duration,should_stop)
+            video_graph=video_graph.removesuffix('[outv]')+','+subtitle_filter(subtitles,_filter_path)+'[outv]'
         bookend_inputs=[];plan=None
         if options.intro_path or options.outro_path:
             video_graph,audio_label,plan=compose_bookends(video_graph,audio_graph,audio_filter,audio_label,
@@ -442,6 +464,12 @@ def _render_micro(source, target, options, metadata, clip_start, clip_duration,
             audio_filter=None
             bookend_inputs=[(s['path'],s['duration']) for s in plan['segments'] if s['kind']!='body']
         else:video_graph+=audio_graph
+        cover=None
+        if options.cover_mode!='none':
+            cover=prepare_cover(source,options,metadata,Path(work)/'cover.png',should_stop)
+            index=len(extra_input_indexes(options))+1
+            video_graph=video_graph.replace('[outv]','[before_cover]')
+            video_graph+=f";[{index}:v]format=yuv420p[cover_frame];[before_cover][cover_frame]overlay=0:0:enable='lt(t+{cover_offset},{options.cover_duration})'[outv]"
         result=transcode_for_upload_bitrate(
             source, target, video_filter=video_graph,
             audio_filter=audio_filter, clip_start=clip_start, clip_duration=clip_duration,
@@ -451,7 +479,11 @@ def _render_micro(source, target, options, metadata, clip_start, clip_duration,
             audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute',
             visual_inputs=[getattr(options,k) for k in ('background_path','pip_path') if getattr(options,k)],
             auxiliary_start=timeline_offset,background_audio_start=max(0,timeline_offset-options.music_delay),
-            bookend_inputs=bookend_inputs)
+            bookend_inputs=bookend_inputs,cover_overlay_path=cover)
+        if cover:
+            sidecar=Path(target).with_suffix('.cover.png')
+            shutil.copyfile(cover,sidecar)
+            result['cover']={'path':str(sidecar.resolve()),'mode':options.cover_mode,'duration':options.cover_duration}
         if plan:result['bookends']=plan
         return result
 
@@ -487,9 +519,14 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
         raise ValueError(f'转场预览的主体时长至少需 {2*options.transition_duration:g} 秒')
     if (options.intro_path or options.outro_path) and full_body>0:
         plan_bookends(options,full_body)  # Validate the actual full composition before previewing a seam.
+    cover_offset=(clip_start-options.trim_start)/options.speed
+    if preview_section=='head':cover_offset=0
+    elif options.intro_path:
+        full_plan=plan_bookends(options,full_body)
+        cover_offset+=full_plan['segments'][0]['duration']-full_plan['overlap']
     result = _render_micro(source, target, render_options, metadata, clip_start, clip_duration,
                            progress=progress, should_stop=should_stop,
-                           timeline_offset=(clip_start-options.trim_start)/options.speed,text_context=text_context)
+                           timeline_offset=(clip_start-options.trim_start)/options.speed,text_context=text_context,cover_offset=cover_offset)
     return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start,
             'resolved_options':asdict(options),'requested_options':requested,
             'source_path':str(Path(source).resolve()),'preview_section':preview_section}
@@ -567,12 +604,14 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
             except FFmpegCancelled:
                 if target:
                     target.unlink(missing_ok=True)
+                    target.with_suffix('.cover.png').unlink(missing_ok=True)
                 result['stopped'] = True
                 persist()
                 return result
             except (OSError, ValueError, FFmpegError, subprocess.SubprocessError) as exc:
                 if target:
                     target.unlink(missing_ok=True)
+                    target.with_suffix('.cover.png').unlink(missing_ok=True)
                 message = str(exc) if isinstance(exc, ValueError) else ('本地视频处理失败：' + str(exc)[-600:])
                 result['failed'].append({'video_id': item['video_id'], 'version': version, 'error': message})
                 if progress:

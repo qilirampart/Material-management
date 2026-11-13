@@ -49,6 +49,10 @@ class ProcessingWorkbench(QWidget):
         self.preview_button = btn('播放最近成品', lambda: local_open(self.last_output))
         self.preview_button.setEnabled(False)
         actions.addWidget(self.preview_button)
+        if mode=='micro':
+            self.last_cover=''
+            self.cover_button=btn('查看最近封面',lambda:local_open(self.last_cover))
+            self.cover_button.setEnabled(False);actions.addWidget(self.cover_button)
         actions.addStretch()
         actions.addWidget(btn('查看本模块成品 →', lambda: owner.view_products(mode)))
         box.addLayout(actions)
@@ -259,6 +263,9 @@ class ProcessingWorkbench(QWidget):
         if result['outputs']:
             self.last_output = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)
+            if self.mode=='micro':
+                self.last_cover=result['outputs'][-1].get('metadata',{}).get('cover',{}).get('path','')
+                self.cover_button.setEnabled(bool(self.last_cover) and Path(self.last_cover).is_file())
         self.owner.refresh_outputs()
 
     def finish(self):

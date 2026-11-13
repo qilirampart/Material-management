@@ -267,6 +267,7 @@ def transcode_for_upload_bitrate(
     auxiliary_start=0,
     background_audio_start=None,
     bookend_inputs=None,
+    cover_overlay_path=None,
 ):
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -278,9 +279,9 @@ def transcode_for_upload_bitrate(
     source_metadata = probe(source_path)
     visual_inputs=tuple(visual_inputs or ())
     bookend_inputs=tuple(bookend_inputs or ())
-    if (image_overlay_path or background_audio_path or visual_inputs or bookend_inputs) and (not video_filter or not output_duration):
+    if (image_overlay_path or background_audio_path or visual_inputs or bookend_inputs or cover_overlay_path) and (not video_filter or not output_duration):
         raise ValueError('附加素材需要完整滤镜和明确的输出时长')
-    for path in (image_overlay_path, background_audio_path, *visual_inputs,*(item[0] for item in bookend_inputs)):
+    for path in (image_overlay_path, background_audio_path, cover_overlay_path, *visual_inputs,*(item[0] for item in bookend_inputs)):
         if path and not Path(path).is_file():
             raise ValueError('附加图片或音频文件不存在')
     budget_duration = output_duration if output_duration is not None else source_metadata.get("duration")
@@ -322,6 +323,7 @@ def transcode_for_upload_bitrate(
         for path,duration in bookend_inputs:
             if Path(path).suffix.lower() in {'.png','.jpg','.jpeg','.webp'}:command+=['-loop','1']
             command+=['-t',str(duration),'-i',str(path)]
+        if cover_overlay_path:command+=['-loop','1','-i',str(cover_overlay_path)]
         if video_filter:
             command += ["-filter_complex", video_filter, "-map", "[outv]"]
         else:
@@ -353,7 +355,7 @@ def transcode_for_upload_bitrate(
             command += ["-af", audio_filter, "-c:a", "aac", "-b:a", "128k"]
         else:
             command += ["-c:a", "copy"]
-        if image_overlay_path or background_audio_path or visual_inputs or bookend_inputs:
+        if image_overlay_path or background_audio_path or visual_inputs or bookend_inputs or cover_overlay_path:
             command += ['-t', str(output_duration)]
         return command + ["-movflags", "+faststart", str(output_path)]
 
