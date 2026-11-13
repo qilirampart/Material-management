@@ -47,6 +47,9 @@ class MicroPreviewDialog(QDialog):
         meta = result['metadata']
         layout.addWidget(label(f"当前设置 · 原片 {result['clip_start']:.2f} 秒起 · "
                                f"预览 {meta['duration']:.1f} 秒 · {meta['width']}×{meta['height']}"))
+        section=result.get('preview_section','body')
+        if section!='body':
+            layout.addWidget(label('片头转场：完整片头＋主体开头片段' if section=='head' else '片尾转场：主体末段＋完整片尾'))
         if result.get('requested_options',{}).get('randomize'):
             plan=result['resolved_options']
             layout.addWidget(label(f"第 1 版 · 前景 {plan['foreground_scale']:.1%} · "

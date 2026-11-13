@@ -17,7 +17,7 @@ class TextTracksDialog(QDialog):
         self.loading=False
         self.connections_closed=False
         outer=QVBoxLayout(self)
-        outer.addWidget(label('各轨独立设置出现时间；时间从加工后视频的 0 秒计算。'))
+        outer.addWidget(label('时间从主体（去头尾／变速后）0 秒计算；片头尾不叠加这些文字。'))
         body=QHBoxLayout();outer.addLayout(body,1)
         left=QVBoxLayout();body.addLayout(left,1)
         self.listing=QListWidget();left.addWidget(self.listing,1)

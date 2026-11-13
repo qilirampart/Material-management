@@ -21,6 +21,7 @@ from src.media import (
 )
 from src.upload import safe_filename_part
 from src.text_tracks import normalize_track,timing_expression,motion_coordinates,SCROLLS
+from src.bookends import TRANSITIONS,plan_bookends,compose_bookends
 
 
 class ClipSelectionProvider(Protocol):
@@ -107,6 +108,13 @@ class VariantOptions:
     music_duration: float = 0
     music_fade_in: float = 0
     music_fade_out: float = 0
+    intro_path: str = ''
+    outro_path: str = ''
+    intro_duration: float = 3
+    outro_duration: float = 3
+    transition: str = 'cut'
+    transition_duration: float = .3
+    bookend_audio: bool = True
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -145,6 +153,11 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            if self.transition not in TRANSITIONS or not isinstance(self.bookend_audio,bool):
+                raise ValueError('片头尾转场或声音设置无效')
+            for value,low,high in ((self.intro_duration,.5,30),(self.outro_duration,.5,30),(self.transition_duration,.1,2)):
+                if not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
+                    raise ValueError('片头尾长度须为 0.5–30 秒，转场为 0.1–2 秒')
             if not isinstance(self.text_tracks,list) or len(self.text_tracks)>6:
                 raise ValueError('最多添加 6 条文字轨')
             for track in self.text_tracks:normalize_track(track)
@@ -184,10 +197,10 @@ class VariantOptions:
                     raise ValueError('音乐资源池需选择混音或仅背景音乐')
                 if self.variants>1 and not any(a!=b for a,b in self.random_ranges.values()) and not self.resource_pools:
                     raise ValueError('随机多版本至少启用一项非零范围或资源池')
-            for key in ('background_path','pip_path'):
+            for key in ('background_path','pip_path','intro_path','outro_path'):
                 path=getattr(self,key)
                 if path and not (self.randomize and self.resource_pools.get(key)) and (not Path(path).is_file() or Path(path).suffix.lower() not in VISUAL_TYPES):
-                    raise ValueError('请选择存在的背景或叠加图片／视频文件')
+                    raise ValueError('请选择存在的背景、叠片或片头尾图片／视频文件')
             if self.watermark_path and not (self.randomize and self.resource_pools.get('watermark_path')) and (not Path(self.watermark_path).is_file() or Path(self.watermark_path).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}):
                 raise ValueError('请选择存在的 PNG/JPG/WebP 水印图片')
             if self.audio_mode in {'mix', 'replace'} and not (self.randomize and self.resource_pools.get('music_path')) and (not self.music_path or not Path(self.music_path).is_file()):
@@ -198,6 +211,7 @@ class VariantOptions:
 IMAGE_TYPES={'.png','.jpg','.jpeg','.webp'}
 VISUAL_TYPES=IMAGE_TYPES|{'.mp4','.mov','.mkv','.webm','.m4v'}
 RESOURCE_TYPES={'background_path':VISUAL_TYPES,'pip_path':VISUAL_TYPES,
+    'intro_path':VISUAL_TYPES,'outro_path':VISUAL_TYPES,
     'watermark_path':IMAGE_TYPES,'music_path':{'.mp3','.wav','.m4a','.aac','.flac','.ogg'}}
 RANDOM_LIMITS={'foreground_scale':(.5,1),'speed':(.8,1.2),'brightness':(-.2,.2),
     'contrast':(.5,1.5),'saturation':(0,2),'zoom_amount':(0,.25),'vertical_position':(0,1)}
@@ -223,7 +237,7 @@ def extra_input_indexes(options):
     keys=[]
     if options.watermark_path:keys.append('watermark_path')
     if options.audio_mode in {'mix','replace'}:keys.append('music_path')
-    keys.extend(k for k in ('background_path','pip_path') if getattr(options,k))
+    keys.extend(k for k in ('background_path','pip_path','intro_path','outro_path') if getattr(options,k))
     return {key:i+1 for i,key in enumerate(keys)}
 
 
@@ -409,18 +423,30 @@ def _render_micro(source, target, options, metadata, clip_start, clip_duration,
         duration = clip_duration / options.speed
         audio_graph, audio_filter, audio_label = build_audio_graph(options, metadata, duration,
             timeline_offset=timeline_offset,total_duration=(metadata['duration']-options.trim_start-options.trim_end)/options.speed)
-        return transcode_for_upload_bitrate(
-            source, target, video_filter=build_video_filter(render_options, version, text_path, metadata,timeline_offset,track_paths) + audio_graph,
+        video_graph=build_video_filter(render_options, version, text_path, metadata,timeline_offset,track_paths)
+        bookend_inputs=[];plan=None
+        if options.intro_path or options.outro_path:
+            video_graph,audio_label,plan=compose_bookends(video_graph,audio_graph,audio_filter,audio_label,
+                options,metadata,duration,extra_input_indexes(options))
+            audio_filter=None
+            bookend_inputs=[(s['path'],s['duration']) for s in plan['segments'] if s['kind']!='body']
+        else:video_graph+=audio_graph
+        result=transcode_for_upload_bitrate(
+            source, target, video_filter=video_graph,
             audio_filter=audio_filter, clip_start=clip_start, clip_duration=clip_duration,
-            output_duration=duration, should_stop=should_stop, progress=progress,
+            output_duration=plan['duration'] if plan else duration, should_stop=should_stop, progress=progress,
             image_overlay_path=options.watermark_path or None,
             background_audio_path=options.music_path if options.audio_mode in {'mix', 'replace'} else None,
             audio_output_label=audio_label, mute_audio=options.audio_mode == 'mute',
             visual_inputs=[getattr(options,k) for k in ('background_path','pip_path') if getattr(options,k)],
-            auxiliary_start=timeline_offset,background_audio_start=max(0,timeline_offset-options.music_delay))
+            auxiliary_start=timeline_offset,background_audio_start=max(0,timeline_offset-options.music_delay),
+            bookend_inputs=bookend_inputs)
+        if plan:result['bookends']=plan
+        return result
 
 
-def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None,text_context=None):
+def render_micro_preview(source, target, options, *, start=0, seconds=10, progress=None, should_stop=None,text_context=None,
+                         preview_section='body'):
     """Render a bounded excerpt with the production filters, without registering a product."""
     options.validate()
     requested=asdict(options)
@@ -430,16 +456,32 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
     if Path(source).resolve() == Path(target).resolve():
         raise ValueError('预览不能覆盖原片')
     metadata = probe(source)
-    clip_start = max(options.trim_start, start)
+    full_body=(metadata['duration']-options.trim_start-options.trim_end)/options.speed
+    if preview_section not in {'body','head','tail'}:raise ValueError('预览类型无效')
+    if preview_section=='head':
+        if not options.intro_path:raise ValueError('请先选择片头素材')
+        clip_start=options.trim_start
+        render_options=replace(options,outro_path='')
+    elif preview_section=='tail':
+        if not options.outro_path:raise ValueError('请先选择片尾素材')
+        clip_start=max(options.trim_start,metadata['duration']-options.trim_end-seconds*options.speed)
+        render_options=replace(options,intro_path='')
+    else:
+        clip_start = max(options.trim_start, start)
+        render_options=replace(options,intro_path='',outro_path='')
     clip_duration = min(seconds * options.speed, metadata['duration'] - options.trim_end - clip_start)
     if clip_duration < .5:
         raise ValueError('预览起点已接近或超出裁剪后的片尾，请减小起点')
-    result = _render_micro(source, target, options, metadata, clip_start, clip_duration,
+    if preview_section!='body' and options.transition!='cut' and clip_duration/options.speed<2*options.transition_duration:
+        raise ValueError(f'转场预览的主体时长至少需 {2*options.transition_duration:g} 秒')
+    if (options.intro_path or options.outro_path) and full_body>0:
+        plan_bookends(options,full_body)  # Validate the actual full composition before previewing a seam.
+    result = _render_micro(source, target, render_options, metadata, clip_start, clip_duration,
                            progress=progress, should_stop=should_stop,
                            timeline_offset=(clip_start-options.trim_start)/options.speed,text_context=text_context)
     return {'path': str(Path(target).resolve()), 'metadata': result, 'clip_start': clip_start,
             'resolved_options':asdict(options),'requested_options':requested,
-            'source_path':str(Path(source).resolve())}
+            'source_path':str(Path(source).resolve()),'preview_section':preview_section}
 
 
 def generate_variants(items, output_root, options, *, progress=None, should_stop=None, resolved_plans=None):

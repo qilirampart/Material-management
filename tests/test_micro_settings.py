@@ -105,6 +105,7 @@ class MicroSettingsTests(unittest.TestCase):
             path=Path(folder)/'presets.json'
             panel=MicroSettings(presets_path=path)
             values=dict(RECOMMENDED,zoom_mode='pulse',zoom_amount=.12,zoom_period=4,
+                intro_duration=2,outro_duration=4,transition='wipeleft',transition_duration=.4,bookend_audio=False,
                 pip_scale=.3,pip_x=.5,pip_y=.75,pip_opacity=.7,randomize=True,random_seed=22,
                 random_ranges={'foreground_scale':[.6,.9],'speed':[1,1.1],'contrast':[1.1,1.3]},
                 resource_pools={'background_path':folder})
@@ -119,7 +120,7 @@ class MicroSettingsTests(unittest.TestCase):
 
     def test_all_six_categories_have_valid_defaults_and_map_values(self):
         panel=MicroSettings()
-        self.assertEqual(panel.tabs.count(),8)
+        self.assertEqual(panel.tabs.count(),9)
         options=VariantOptions(**panel.values()).validate()
         self.assertEqual(options.output_width,720)
         self.assertEqual(options.audio_mode,'original')

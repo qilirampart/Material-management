@@ -6,7 +6,7 @@ from pathlib import Path
 from dataclasses import asdict
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QLineEdit,
-    QSpinBox, QScrollArea,
+    QSpinBox, QScrollArea,QComboBox,
     QProgressBar, QTableWidgetItem)
 from src.ui_design import card, label, btn, Background
 from src.desktop_widgets import local_open
@@ -89,6 +89,11 @@ class ProcessingWorkbench(QWidget):
         self.effect_button = btn('预览当前效果', lambda: self.start(preview=True))
         self.effect_button.setToolTip('预览第一条勾选视频，默认 10 秒；起点与时长可在参数区底部调整。不加入成品库。')
         if mode == 'micro':
+            preview_actions=QHBoxLayout()
+            self.preview_section=QComboBox()
+            for text,value in [('主体效果','body'),('片头转场','head'),('片尾转场','tail')]:
+                self.preview_section.addItem(text,value)
+            self.preview_section.setToolTip('转场预览另含完整片头或片尾；下方时长是主体片段长度。')
             preview_form = QFormLayout()
             self.preview_start = VariantDialog._decimal(0, 86400, 0, ' 秒')
             self.preview_length = QSpinBox()
@@ -96,9 +101,12 @@ class ProcessingWorkbench(QWidget):
             self.preview_length.setValue(10)
             self.preview_length.setSuffix(' 秒')
             preview_form.addRow('原片预览起点', VariantDialog._stepper(self.preview_start, '原片预览起点'))
-            preview_form.addRow('预览时长', VariantDialog._stepper(self.preview_length, '预览时长'))
+            preview_form.addRow('主体预览时长', VariantDialog._stepper(self.preview_length, '预览时长'))
+            self.preview_section.currentIndexChanged.connect(lambda:self.preview_start.parentWidget().setEnabled(
+                self.preview_section.currentData()=='body'))
             fields.insertLayout(fields.count()-1, preview_form)
-            right.addWidget(self.effect_button)
+            preview_actions.addWidget(self.preview_section,1);preview_actions.addWidget(self.effect_button,2)
+            right.addLayout(preview_actions)
             right.addWidget(self.sample_button)
             self.sample_button.setText('生成完整样片（进入成品库）')
         self.start_button = btn('处理勾选视频' if mode == 'md5' else '批量处理勾选视频', self.start, True)
@@ -174,6 +182,7 @@ class ProcessingWorkbench(QWidget):
             self.preview_cache = tempfile.TemporaryDirectory(prefix='dz-effect-preview-')
             preview_target = Path(self.preview_cache.name) / 'preview.mp4'
             preview_start, preview_seconds = self.preview_start.value(), self.preview_length.value()
+            preview_section=self.preview_section.currentData()
         self.stop_event.clear()
         task = None
         def execute():
@@ -182,6 +191,7 @@ class ProcessingWorkbench(QWidget):
                     result = render_micro_preview(items[0]['path'], preview_target, options,
                         start=preview_start, seconds=preview_seconds, should_stop=self.stop_event.is_set,
                         text_context=items[0],
+                        preview_section=preview_section,
                         progress=lambda phase: task.progress.emit({'phase': phase, 'index': 1,
                             'total': 1, 'video_id': '效果预览'}))
                 except FFmpegCancelled:
@@ -212,6 +222,7 @@ class ProcessingWorkbench(QWidget):
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
                         self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(False)
+        if self.mode=='micro':self.preview_section.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.bar.setRange(0, 0)
         task.start()
@@ -247,6 +258,7 @@ class ProcessingWorkbench(QWidget):
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
                         self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(True)
+        if self.mode=='micro':self.preview_section.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.bar.setRange(0, 1)
         self.bar.setValue(1)

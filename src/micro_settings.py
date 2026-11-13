@@ -136,7 +136,7 @@ class MicroSettings(QWidget):
         self.number(watermark,'持续（0=片尾）','watermark_duration',0,86400,0,' 秒',1,2,.1)
         self.combo(watermark,'水印滚动','watermark_scroll',[('固定','none'),('向左','left'),('向右','right'),('向上','up'),('向下','down')])
         self.number(watermark,'滚动速度','watermark_scroll_speed',10,300,60,' px/s',1,0,5)
-        watermark.addRow(label('文字轨与水印时段均从加工后视频 0 秒开始；快捷文字全程显示。'))
+        watermark.addRow(label('文字／水印从主体 0 秒起算，只作用于主体，不叠加到片头尾。'))
 
         audio = self.page('音频')
         self.audio_mode = self.combo(audio,'处理方式','audio_mode',[('保留原声','original'),('静音','mute'),
@@ -206,6 +206,25 @@ class MicroSettings(QWidget):
             if enabled and not any(w[0].isChecked() for w in self.range_widgets.values()):
                 for key in ('foreground_scale','speed'):self.range_widgets[key][0].setChecked(True)
         self.randomize.toggled.connect(enable_default_ranges)
+        bookends=self.page('头尾')
+        self.intro_path=self.file_picker(bookends,'片头素材',visual_filter)
+        self.number(bookends,'片头长度','intro_duration',.5,30,3,' 秒',1,1,.1)
+        self.outro_path=self.file_picker(bookends,'片尾素材',visual_filter)
+        self.number(bookends,'片尾长度','outro_duration',.5,30,3,' 秒',1,1,.1)
+        self.combo(bookends,'连接方式','transition',[('直接拼接','cut'),('交叉淡化','fade'),('溶解','dissolve'),
+            ('向左擦除','wipeleft'),('向右擦除','wiperight'),('向上滑动','slideup')])
+        self.number(bookends,'转场时长','transition_duration',.1,2,.3,' 秒',1,1,.1)
+        def transition_enabled():
+            self.fields['transition_duration'].parentWidget().setEnabled(self.fields['transition'].currentData()!='cut')
+        self.fields['transition'].currentIndexChanged.connect(transition_enabled)
+        transition_enabled()
+        self.bookend_audio=QCheckBox('保留片头尾原声');self.bookend_audio.setChecked(True)
+        self.bookend_audio.setToolTip('主体选择静音时，片头尾也一起静音。')
+        self.audio_mode.currentIndexChanged.connect(lambda:self.bookend_audio.setEnabled(self.audio_mode.currentData()!='mute'))
+        bookends.addRow(self.bookend_audio)
+        bookends.addRow(label('图片停留指定时长；视频从开头截取，不足则按实际长度。片头尾等比补黑边，不叠加主体文字和配乐。'))
+        for key,title in [('intro_path','片头资源池'),('outro_path','片尾资源池')]:
+            self.pool_widgets[key]=self.file_picker(variation,title,'',directory=True)
         # Keep the established first six categories in their original order.
         layers_widget=layers.parentWidget()
         self.tabs.removeTab(self.tabs.indexOf(layers_widget))
@@ -245,6 +264,8 @@ class MicroSettings(QWidget):
         self.text_tracks=deepcopy(values['text_tracks'])
         self.tracks_button.setText(f'多文字轨（{len(self.text_tracks)}）…')
         self.background_path.setText(values['background_path']);self.pip_path.setText(values['pip_path'])
+        self.intro_path.setText(values['intro_path']);self.outro_path.setText(values['outro_path'])
+        self.bookend_audio.setChecked(values['bookend_audio'])
         self.randomize.setChecked(values['randomize']);self.random_seed.setValue(values['random_seed'])
         for key,(enabled,a,b) in self.range_widgets.items():
             enabled.setChecked(key in values['random_ranges'])
@@ -260,10 +281,10 @@ class MicroSettings(QWidget):
         self.preset_status.setText('已应用：'+name)
         self.delete_favorite_button.setEnabled(name!=RECOMMENDED_NAME)
         values=self.values()
-        missing=[values[key] for key in ('music_path','watermark_path','background_path','pip_path')
+        missing=[values[key] for key in ('music_path','watermark_path','background_path','pip_path','intro_path','outro_path')
                  if values[key] and not Path(values[key]).is_file()]
         if missing:
-            self.preset_status.setText('参数已应用；配乐或水印文件已移动，请重新选择。')
+            self.preset_status.setText('参数已应用；引用文件已移动，请重新选择。')
 
     def edit_text_tracks(self):
         dialog=TextTracksDialog(self.text_tracks,self)
@@ -367,6 +388,8 @@ class MicroSettings(QWidget):
             watermark_path=self.watermark_path.text().strip(),music_path=self.music_path.text().strip(),
             drop_every=self.drop_every.value() if self.drop_enabled.isChecked() else 0)
         values.update(background_path=self.background_path.text().strip(),pip_path=self.pip_path.text().strip(),
+            intro_path=self.intro_path.text().strip(),outro_path=self.outro_path.text().strip(),
+            bookend_audio=self.bookend_audio.isChecked(),
             text_tracks=deepcopy(self.text_tracks),
             randomize=self.randomize.isChecked(),random_seed=self.random_seed.value(),
             random_ranges={key:[a.value(),b.value()] for key,(enabled,a,b) in self.range_widgets.items() if enabled.isChecked()},

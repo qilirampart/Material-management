@@ -10,7 +10,8 @@ SETTING_KEYS = set(asdict(VariantOptions())) - {'mode', 'uploader', 'variants'}
 LEGACY_KEYS=SETTING_KEYS-{'zoom_mode','zoom_amount','zoom_period','background_path','pip_path',
     'pip_scale','pip_x','pip_y','pip_opacity','randomize','random_seed','random_ranges','resource_pools',
     'text_tracks','watermark_start','watermark_duration','watermark_scroll','watermark_scroll_speed',
-    'music_delay','music_duration','music_fade_in','music_fade_out'}
+    'music_delay','music_duration','music_fade_in','music_fade_out','intro_path','outro_path',
+    'intro_duration','outro_duration','transition','transition_duration','bookend_audio'}
 RECOMMENDED_NAME = '推荐 · 明显变化'
 RECOMMENDED = {key: value for key, value in asdict(VariantOptions(
     foreground_scale=.8, vertical_position=.25, brightness=.02, contrast=1.12,
@@ -26,12 +27,12 @@ def validate_settings(settings):
             for k,v in settings['resource_pools'].items()):
         raise ValueError('收藏资源池格式无效')
     # A moved music/image file must not prevent loading the user's other favorites.
-    values = dict(settings, watermark_path='', music_path='', background_path='',pip_path='',
+    values = dict(settings, watermark_path='', music_path='', background_path='',pip_path='',intro_path='',outro_path='',
         audio_mode='original',resource_pools={})
     VariantOptions(**values).validate()
     if settings['audio_mode'] not in {'original','mute','mix','replace'}:
         raise ValueError('收藏的音频模式无效')
-    if not all(isinstance(settings[k], str) for k in ('watermark_path','music_path','background_path','pip_path')):
+    if not all(isinstance(settings[k], str) for k in ('watermark_path','music_path','background_path','pip_path','intro_path','outro_path')):
         raise ValueError('收藏文件路径无效')
     return dict(settings)
 
