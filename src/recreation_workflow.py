@@ -10,6 +10,7 @@ from src.recreation_page import RecreationPage
 from src.recreation_workspace import RecreationWorkspace
 from src.recreation_processing import ProcessingWorkbench
 from src.recreation import RecreationBatch
+from src.recovery_dialog import RecoveryDialog
 from src.recreation_platform import RecreationPlatformError
 from src.recreation_upload import upload_files, upload_script
 from src.ui_design import card, label, btn, Background
@@ -38,6 +39,7 @@ class RecreationWorkflowPage(RecreationPage):
         self.upload_task, self.upload_busy = None, False
         self.upload_stop_event = threading.Event()
         self.upload_groups, self.catalog = [], []
+        self.recovery_dialog=None
         self.auto_upload_pending = False
         self.current_upload = None
         collect, old_outputs = self.tabs.widget(0), self.tabs.widget(1)
@@ -107,6 +109,8 @@ class RecreationWorkflowPage(RecreationPage):
         controls = QHBoxLayout()
         controls.addWidget(btn('播放勾选成品', self.play_selected))
         controls.addWidget(btn('刷新成品列表', self.refresh_outputs))
+        self.recover_button=btn('找回加工成品…',self.recover_products)
+        controls.addWidget(self.recover_button)
         controls.addStretch()
         box.addLayout(controls)
         upload_box.addWidget(products, 1)
@@ -187,6 +191,7 @@ class RecreationWorkflowPage(RecreationPage):
 
     def work_in_progress(self):
         return (super().work_in_progress() or getattr(self, 'upload_busy', False)
+                or getattr(getattr(self,'recovery_dialog',None),'busy',False)
                 or getattr(self, 'queue_running', False)
                 or any(getattr(getattr(self, n, None), 'busy', False) for n in ('md5', 'micro')))
 
@@ -520,6 +525,29 @@ class RecreationWorkflowPage(RecreationPage):
         self.output_filter.setCurrentIndex(self.output_filter.findData(mode))
         self.tabs.setCurrentIndex(4)
 
+    def recover_products(self):
+        if self.work_in_progress():
+            self.message.setText('请先完成当前任务，再找回成品');return
+        path,_=QFileDialog.getOpenFileName(self,'选择加工目录中的 manifest.json',str(self.batch.folder) if self.batch else '',
+            '加工记录 (manifest.json)')
+        if not path:return
+        dialog=RecoveryDialog(path,self);self.recovery_dialog=dialog
+        try:
+            dialog.exec()
+            if dialog.saved_batch is not None:
+                batch=dialog.saved_batch;folder=str(batch.folder)
+                if folder not in self.workspace.folders:self.workspace.folders.append(folder)
+                index_error=False
+                try:
+                    self.workspace.path=self.preferences_path;self.workspace.save()
+                except OSError:index_error=True
+                if self.batch and self.batch.folder==batch.folder:self.batch=batch
+                self.output_filter.setCurrentIndex(0);self.refresh_batch_list();self.refresh_outputs();self.tabs.setCurrentIndex(4)
+                self.message.setText(f'已找回 {dialog.saved_count} 个成品；未触发上传。'+
+                    ('索引保存失败，下次请从历史批次打开来源目录。' if index_error else ''))
+        finally:
+            self.recovery_dialog=None;dialog.deleteLater();self.task_finished.emit()
+
     def refresh_outputs(self):
         if not hasattr(self, 'workspace') or not hasattr(self, 'output_filter'):
             return super().refresh_outputs()
@@ -715,6 +743,7 @@ class RecreationWorkflowPage(RecreationPage):
         self.task_finished.emit()
 
     def request_stop_all(self):
+        if self.recovery_dialog is not None:self.recovery_dialog.reject()
         self.stop_collection()
         for panel in (self.md5, self.micro):
             if panel.busy:
