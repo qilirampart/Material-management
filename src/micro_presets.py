@@ -17,7 +17,7 @@ LEGACY_KEYS=SETTING_KEYS-{'zoom_mode','zoom_amount','zoom_period','background_pa
     'text_tracks','watermark_start','watermark_duration','watermark_scroll','watermark_scroll_speed',
     'music_delay','music_duration','music_fade_in','music_fade_out','intro_path','outro_path',
     'intro_duration','outro_duration','transition','transition_duration','bookend_audio','regions',
-    'crop_mode','crop_left','crop_right','crop_top','crop_bottom'}-set(SUBTITLE_DEFAULTS)-set(PICTURE_DEFAULTS)
+    'crop_mode','crop_left','crop_right','crop_top','crop_bottom','clip_mode','range_start','range_duration'}-set(SUBTITLE_DEFAULTS)-set(PICTURE_DEFAULTS)
 RECOMMENDED_NAME = '推荐 · 明显变化'
 RECOMMENDED = {key: value for key, value in asdict(VariantOptions(
     foreground_scale=.8, vertical_position=.25, brightness=.02, contrast=1.12,

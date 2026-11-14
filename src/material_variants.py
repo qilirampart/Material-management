@@ -147,6 +147,9 @@ class VariantOptions:
     vignette: float = 0
     border_width: int = 0
     border_color: str = 'FFFFFF'
+    clip_mode: str = 'trim'
+    range_start: float = 0
+    range_duration: float = 10
 
     def validate(self):
         if self.mode not in {'micro', 'md5'} or self.background not in {'blur', 'black'}:
@@ -185,6 +188,11 @@ class VariantOptions:
                 and (self.mask_x+self.mask_w > 100 or self.mask_y+self.mask_h > 100)):
             raise ValueError('区域范围不能越过画面边界')
         if self.mode == 'micro':
+            if self.clip_mode not in {'trim','range'}:
+                raise ValueError('片段保留方式无效')
+            for value,low,high in ((self.range_start,0,86400),(self.range_duration,.5,86400)):
+                if not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
+                    raise ValueError('原片起点须为 0–86400 秒，保留时长须为 0.5–86400 秒')
             validate_picture_effects(self)
             validate_assets(self)
             validate_crop(self)
@@ -445,6 +453,18 @@ def build_audio_graph(options, metadata, duration,*,timeline_offset=0,total_dura
     return graph, None, '[outa]'
 
 
+def effective_clip_options(options,source_duration):
+    """Normalize an explicit raw-source range into the established body timeline.
+
+    Requested options remain separate; frozen preview plans are idempotent here.
+    """
+    if options.clip_mode=='trim':return options
+    end=options.range_start+options.range_duration
+    if options.range_start>=source_duration or end>source_duration+1e-6:
+        raise ValueError(f'指定片段 {options.range_start:g}–{end:g} 秒超出原片 {source_duration:g} 秒；请调整后重试')
+    return replace(options,trim_start=options.range_start,trim_end=max(0,source_duration-end))
+
+
 def _render_micro(source, target, options, metadata, clip_start, clip_duration,
                   *, version=1, progress=None, should_stop=None, timeline_offset=0,text_context=None,cover_offset=0):
     with tempfile.TemporaryDirectory(prefix='dz-variant-') as work:
@@ -508,6 +528,7 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
     if Path(source).resolve() == Path(target).resolve():
         raise ValueError('预览不能覆盖原片')
     metadata = probe(source)
+    options=effective_clip_options(options,metadata['duration'])
     full_body=(metadata['duration']-options.trim_start-options.trim_end)/options.speed
     if preview_section not in {'body','head','tail'}:raise ValueError('预览类型无效')
     if preview_section=='head':
@@ -589,6 +610,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     if metadata['file_size_bytes'] > MAXIMUM_UPLOAD_FILE_SIZE_BYTES:
                         raise ValueError('文件超过平台 510 MB 上限；仅改 MD5 不会缩小文件，请先剪辑或压缩')
                 else:
+                    resolved=effective_clip_options(resolved,source_metadata['duration'])
                     clip_duration = source_metadata['duration'] - resolved.trim_start - resolved.trim_end
                     if clip_duration < 0.5:
                         raise ValueError('去头尾后不足 0.5 秒，请减少裁剪时长')

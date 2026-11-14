@@ -133,9 +133,16 @@ class MicroSettings(QWidget):
         color.addRow(label('0 表示不锐化／不降噪；增强过多可能损失细节。'))
 
         timing = self.page('时间')
+        self.combo(timing,'保留方式','clip_mode',[('去掉开头与结尾（原方式）','trim'),('指定原片连续片段','range')])
+        self.number(timing,'原片起点','range_start',0,86400,0,' 秒',1,2,.1)
+        self.number(timing,'保留时长','range_duration',.5,86400,10,' 秒',1,2,.1)
+        self.clip_summary=label('');timing.addRow(self.clip_summary)
         self.trim_start = self.number(timing,'去掉开头','trim_start',0,60,.15,' 秒',1,2,.01)
         self.trim_end = self.number(timing,'去掉结尾','trim_end',0,60,.15,' 秒',1,2,.01)
         self.speed = self.number(timing,'播放速度','speed',.8,1.2,1.02,' 倍',1,2,.01)
+        self.fields['clip_mode'].currentIndexChanged.connect(self.update_clip_controls)
+        for key in ('range_start','range_duration','speed'):self.fields[key].valueChanged.connect(self.update_clip_controls)
+        self.update_clip_controls()
         self.combo(timing,'输出帧率','output_fps',[('跟随原片',0),('24 fps',24),('25 fps',25),('30 fps',30),('50 fps',50),('60 fps',60)])
         self.drop_enabled = QCheckBox('启用间隔抽帧')
         timing.addRow(self.drop_enabled)
@@ -328,6 +335,16 @@ class MicroSettings(QWidget):
         missing=[ref for ref in preset_references(values) if not ref['exists']]
         if missing:
             self.preset_status.setText('参数已应用；引用文件已移动，请重新选择。')
+
+    def update_clip_controls(self,*_):
+        explicit=self.fields['clip_mode'].currentData()=='range'
+        for key in ('range_start','range_duration'):self.fields[key].parentWidget().setEnabled(explicit)
+        for key in ('trim_start','trim_end'):self.fields[key].parentWidget().setEnabled(not explicit)
+        if explicit:
+            start=self.fields['range_start'].value();duration=self.fields['range_duration'].value()
+            self.clip_summary.setText(f'保留原片 {start:g}–{start+duration:g} 秒，变速后约 {duration/self.speed.value():.2f} 秒。'
+                '超出原片的条目会报错；不叠加去头尾。')
+        else:self.clip_summary.setText('沿用去头尾设置；原片起点和保留时长暂不生效。')
 
     def update_picture_effects_label(self):
         active=(self.picture_effects['grid_layout']!='none' or self.picture_effects['picture_style']!='original'
