@@ -1,5 +1,7 @@
 """Local named micro-innovation settings, separate from batches and credentials."""
 import json
+import re
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from src.batch import save_json
@@ -60,3 +62,83 @@ def write_presets(path, presets):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     save_json(path, {'schema':1, 'presets':presets})
+
+
+PACKAGE_FORMAT='dianzhong.micro-presets'
+MAX_PACKAGE_BYTES=2*1024*1024
+REFERENCE_LABELS={'watermark_path':'水印','music_path':'音乐','background_path':'背景',
+    'pip_path':'叠片','intro_path':'片头','outro_path':'片尾','subtitle_path':'字幕','cover_path':'封面'}
+
+
+def _validate_exchange_paths(values):
+    paths=[values[key] for key in REFERENCE_LABELS]+list(values['resource_pools'].values())
+    for path in paths:
+        if (path.startswith(('\\\\','//')) or any(ord(c)<32 for c in path)
+                or (re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:',path) and not re.match(r'^[A-Za-z]:[\\/]',path))):
+            raise ValueError('共享方案仅支持本地资源路径，不支持网络地址或共享目录')
+
+
+def preset_references(values):
+    """Called after package validation; no automatic downloads or file execution."""
+    refs=[]
+    for key,label in REFERENCE_LABELS.items():
+        path=values[key]
+        if path:refs.append({'label':label,'path':path,'exists':Path(path).is_file()})
+    for key,path in values['resource_pools'].items():
+        if path:refs.append({'label':REFERENCE_LABELS[key]+'资源池','path':path,'exists':Path(path).is_dir()})
+    return refs
+
+
+def _validated_name(name):
+    if not isinstance(name,str) or name!=name.strip() or not 1<=len(name)<=40 or name==RECOMMENDED_NAME or any(ord(c)<32 for c in name):
+        raise ValueError('方案名称须为 1–40 字，不能使用推荐方案名称')
+    return name
+
+
+def _unique_json_keys(pairs):
+    data={}
+    for key,value in pairs:
+        if key in data:raise ValueError('方案文件有重复字段：'+key)
+        data[key]=value
+    return data
+
+
+def read_preset_package(path):
+    with Path(path).open('rb') as stream:payload=stream.read(MAX_PACKAGE_BYTES+1)
+    if len(payload)>MAX_PACKAGE_BYTES:raise ValueError('方案文件超过 2 MB')
+    data=json.loads(payload.decode('utf-8-sig'),object_pairs_hook=_unique_json_keys)
+    if (not isinstance(data,dict) or set(data)!={'format','schema','presets'}
+            or data['format']!=PACKAGE_FORMAT or data['schema']!=1):
+        raise ValueError('请选择本软件导出的方案 JSON 文件')
+    presets=data['presets']
+    if not isinstance(presets,dict) or not 1<=len(presets)<=100:raise ValueError('方案文件须包含 1–100 个方案')
+    result={}
+    for name,values in presets.items():
+        values=validate_settings(values);_validate_exchange_paths(values)
+        result[_validated_name(name)]=deepcopy(values)
+    return result
+
+
+def export_preset_package(path,name,values):
+    """Explicit options whitelist excludes credentials, batches and uploader identity."""
+    values=validate_settings(values);_validate_exchange_paths(values)
+    data={'format':PACKAGE_FORMAT,'schema':1,'presets':{_validated_name(name):values}}
+    if len(json.dumps(data,ensure_ascii=False,indent=2).encode('utf-8'))>MAX_PACKAGE_BYTES:
+        raise ValueError('方案参数超过 2 MB，未导出')
+    save_json(Path(path),data)
+
+
+def merge_imported_presets(local,incoming,*,replace_existing=False):
+    """Build a copy first; caller persists it before changing the visible state."""
+    merged=deepcopy(local);names=[]
+    for name,settings in incoming.items():
+        _validated_name(name);values=deepcopy(validate_settings(settings));target=name
+        if not replace_existing and target in merged:
+            index=1
+            while True:
+                suffix='（导入'+(str(index) if index>1 else '')+'）'
+                target=name[:40-len(suffix)]+suffix
+                if target not in merged and target not in incoming:break
+                index+=1
+        merged[target]=values;names.append(target)
+    return merged,names

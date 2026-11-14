@@ -1,17 +1,19 @@
 """Composable micro-innovation controls; every enabled control maps to VariantOptions."""
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget,
-    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QInputDialog, QMessageBox,QDialog)
+    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QInputDialog, QMessageBox,QDialog,QMenu,QPushButton)
 from pathlib import Path
 from copy import deepcopy
 from src.subtitle_cover_dialog import SubtitleCoverDialog
 from src.subtitle_cover import SUBTITLE_DEFAULTS
 from src.picture_effects import PICTURE_DEFAULTS
 from src.picture_effects_dialog import PictureEffectsDialog
+from src.preset_import_dialog import PresetImportDialog
 from src.text_tracks_dialog import TextTracksDialog
 from src.region_editor import RegionEditorDialog
 from src.variant_dialog import VariantDialog
 from src.ui_design import label, btn
-from src.micro_presets import RECOMMENDED_NAME, RECOMMENDED, read_presets, write_presets, validate_settings
+from src.micro_presets import (RECOMMENDED_NAME,RECOMMENDED,read_presets,write_presets,validate_settings,
+    read_preset_package,export_preset_package,merge_imported_presets,preset_references)
 from src.material_variants import VariantOptions
 
 
@@ -39,6 +41,13 @@ class MicroSettings(QWidget):
         actions.addWidget(btn('恢复推荐',self.apply_recommended))
         self.delete_favorite_button = btn('删除收藏',self.delete_favorite)
         actions.addWidget(self.delete_favorite_button)
+        self.exchange_button=QPushButton('方案文件')
+        self.exchange_button.setToolTip('导出当前参数或导入到收藏；方案包含本地资源路径，不包含视频、图片、音乐或登录配置。')
+        exchange_menu=QMenu(self.exchange_button)
+        exchange_menu.addAction('导出当前参数…',self.export_preset)
+        import_action=exchange_menu.addAction('导入到收藏…',self.import_presets)
+        import_action.setEnabled(self.presets_path is not None)
+        self.exchange_button.setMenu(exchange_menu);actions.addWidget(self.exchange_button)
         actions.addStretch()
         outer.addLayout(actions)
         self.preset_status = label('')
@@ -316,8 +325,7 @@ class MicroSettings(QWidget):
         self.preset_status.setText('已应用：'+name)
         self.delete_favorite_button.setEnabled(name!=RECOMMENDED_NAME)
         values=self.values()
-        missing=[values[key] for key in ('music_path','watermark_path','background_path','pip_path','intro_path','outro_path','subtitle_path','cover_path')
-                 if values[key] and not Path(values[key]).is_file()]
+        missing=[ref for ref in preset_references(values) if not ref['exists']]
         if missing:
             self.preset_status.setText('参数已应用；引用文件已移动，请重新选择。')
 
@@ -390,6 +398,44 @@ class MicroSettings(QWidget):
             self.preset_status.setText('已收藏：'+name)
         except (OSError,ValueError,TypeError) as exc:
             self.preset_status.setText('未能收藏：'+str(exc))
+
+    def export_preset(self):
+        default_name=self.preset_combo.currentText()
+        if not default_name or default_name==RECOMMENDED_NAME:default_name='分享格式'
+        name,ok=QInputDialog.getText(self,'导出当前参数','方案名称（最多 40 字）：',text=default_name)
+        if not ok:return
+        path,_=QFileDialog.getSaveFileName(self,'导出创新方案','微创新方案.dzmicro.json','创新方案 (*.dzmicro.json *.json)')
+        if not path:return
+        try:
+            target=Path(path)
+            if target.suffix.lower()!='.json':target=Path(str(target)+'.dzmicro.json')
+            if self.presets_path is not None and target.resolve()==self.presets_path.resolve():
+                raise ValueError('请选择其他文件，不能覆盖本机收藏库')
+            export_preset_package(target,name.strip(),self.values())
+            self.preset_status.setText('已导出当前参数；资源文件未包含：'+str(target))
+        except (OSError,ValueError,TypeError) as exc:self.preset_status.setText('未能导出：'+str(exc))
+
+    def import_presets(self):
+        if self.presets_path is None:return
+        path,_=QFileDialog.getOpenFileName(self,'导入创新方案','','创新方案 (*.dzmicro.json *.json)')
+        if not path:return
+        dialog=None
+        try:
+            incoming=read_preset_package(path)
+            local=read_presets(self.presets_path)
+            dialog=PresetImportDialog(incoming,local,self)
+            if dialog.exec()!=QDialog.DialogCode.Accepted:return
+            # Re-read after human confirmation so unrelated newly saved names survive.
+            local=read_presets(self.presets_path)
+            merged,names=merge_imported_presets(local,incoming,replace_existing=dialog.replace_existing)
+            write_presets(self.presets_path,merged)
+            selected=self.preset_combo.currentText();unselected=self.preset_combo.currentIndex()<0
+            self.presets=merged;self.refresh_presets(selected)
+            if unselected:self.preset_combo.setCurrentIndex(-1)
+            self.preset_status.setText(f'已导入 {len(names)} 个方案；从收藏列表选择后应用。')
+        except (OSError,ValueError,TypeError) as exc:self.preset_status.setText('未能导入：'+str(exc))
+        finally:
+            if dialog is not None:dialog.deleteLater()
 
     def delete_favorite(self):
         name=self.preset_combo.currentText()
