@@ -94,6 +94,31 @@ jobs:
           $installer = Get-ChildItem release -File -Filter '*.exe' | Select-Object -First 1
           Move-Item -LiteralPath $installer.FullName -Destination "release/DianzhongMaterialAssistant-Setup-${env:RELEASE_VERSION}.exe"
           python scripts/build_online_installer.py --version "${env:RELEASE_VERSION}"
+      - name: Verify packaged Windows application
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MATERIAL_ASSISTANT_HOME: ${{ runner.temp }}/material-assistant-smoke
+          MATERIAL_ASSISTANT_USER_HOME: ${{ runner.temp }}/material-assistant-smoke/user
+        run: |
+          $root = $env:MATERIAL_ASSISTANT_HOME
+          New-Item -ItemType Directory -Force -Path "$root/runtime" | Out-Null
+          @{ output_root = "$root/materials"; internal_browser_debug_port = 9241; platform_browser_data_path = "$root/browser" } |
+            ConvertTo-Json | Set-Content -LiteralPath "$root/runtime/desktop_config.json" -Encoding utf8
+          $exe = Join-Path $PWD 'release/素材投放助手/素材投放助手.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-ui',"$root/evidence" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
+          $result = Get-Content -LiteralPath "$root/evidence/result.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Packaged browser/processing/playback validation failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-packaged-smoke-evidence
+          path: |
+            ${{ runner.temp }}/material-assistant-smoke/evidence/*.json
+            ${{ runner.temp }}/material-assistant-smoke/evidence/*.png
+          if-no-files-found: ignore
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -150,9 +175,11 @@ jobs:
           name: v${{ needs.prepare.outputs.version }}
           generate_release_notes: true
           body: |
-            Windows: 下载 `.exe` 安装包后直接运行。
+            Windows：推荐下载 `DianzhongMaterialAssistant-Setup-版本号.exe` 完整安装包，无需另装 Python 或 FFmpeg。
 
-            macOS: 当前为未签名构建包。首次打开如被 Gatekeeper 拦截，请在 Finder 中按住 Control 点击应用后选择“打开”。
+            macOS：提供未签名构建包，尚未完成真实设备验收；首次启动请按系统安全提示操作。
 
             平台工作台的内嵌 Edge 上传能力仅支持 Windows；macOS 可使用素材下载、检测和复核功能。
-          files: release-assets/*
+          files: |
+            release-assets/*.exe
+            release-assets/*.zip
