@@ -1,11 +1,13 @@
 """Offline diagnostic for the packaged native application."""
 import json
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from src.desktop import MainWindow, configure_app
 from src.media import run
+from src.ui_design import Background
 
 
 def smoke(output):
@@ -15,11 +17,11 @@ def smoke(output):
     configure_app(app)
     window = MainWindow(restore=False)
     window.show()
-    result = {}
+    result = {};completed=False;stop=threading.Event();task=None;preview=None
 
     def finish():
         try:
-            for i, name in enumerate(["tasks", "review", "platform", "settings"]):
+            for i, name in enumerate(["tasks", "review", "platform", "settings","recreation"]):
                 window.navigation.setCurrentRow(i)
                 app.processEvents()
                 window.grab().save(str(folder / (name + ".png")))
@@ -33,17 +35,66 @@ def smoke(output):
             save(False, str(exc))
 
     def browser_loaded(ok):
+        nonlocal task
         try:
-            ffmpeg = run(["ffmpeg", "-version"]).splitlines()[0]
-            save(ok, ffmpeg)
+            if not ok:save(False,'Embedded browser did not load');return
+            result['ffmpeg']=run(["ffmpeg", "-version"]).splitlines()[0]
+            def processing():
+                from src.material_variants import VariantOptions,generate_variants
+                source=folder/'diagnostic-source.mp4';captions=folder/'diagnostic.srt'
+                captions.write_text('1\n00:00:01,000 --> 00:00:03,000\n字幕与画面验收\n',encoding='utf-8')
+                run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=size=320x240:rate=30:duration=4',
+                    '-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-c:a','aac','-shortest',str(source)],should_stop=stop.is_set)
+                reports={}
+                for mode in ('md5','micro'):
+                    options=VariantOptions(mode=mode,uploader='TEST',clip_mode='range',range_start=1,range_duration=2,
+                        grid_layout='quad',picture_style='sepia',border_width=4,subtitle_path=str(captions),
+                        cover_mode='frame',cover_time=1,title='候选版验收')
+                    report=generate_variants([{'path':str(source),'video_id':'diagnostic','drama':'本地验收'}],folder/mode,
+                        options,should_stop=stop.is_set)
+                    if report['failed'] or report['stopped'] or len(report['outputs'])!=1:raise ValueError(str(report))
+                    reports[mode]=report
+                return reports
+            task=Background(processing,window)
+            task.result.connect(lambda value:result.update(processing=value))
+            task.failed.connect(lambda value:result.update(error=value))
+            task.finished.connect(processing_finished);task.start()
         except Exception as exc:
             save(False, str(exc))
 
+    def processing_finished():
+        nonlocal preview
+        if result.get('error') or stop.is_set():save(False,result.get('error','Diagnostic stopped'));return
+        try:
+            from src.micro_preview import MicroPreviewDialog
+            output=result['processing']['micro']['outputs'][0]
+            preview=MicroPreviewDialog({'path':output['path'],'clip_start':1,'metadata':output['metadata']},window)
+            preview.show();preview.player.play()
+            QTimer.singleShot(2000,playback_finished)
+        except Exception as exc:save(False,str(exc))
+
+    def playback_finished():
+        if completed:return
+        if preview is None or preview.video.frame.isNull():save(False,'Embedded player did not decode a frame');return
+        preview.player.pause();preview.grab().save(str(folder/'micro-playback.png'))
+        preview.video.frame.save(str(folder/'micro-frame.png'));save(True,'Browser, bundled FFmpeg, processing and playback ready')
+
     def save(ok, message):
-        (folder / "result.json").write_text(json.dumps({"ok": ok, "pages": window.pages.count(), "message": message}, ensure_ascii=False), encoding="utf-8")
+        nonlocal completed
+        if completed:return
+        completed=True
+        if preview is not None:preview.done(0)
+        report={key:value for key,value in result.items() if key!='browser'}
+        report.update(ok=ok,pages=window.pages.count(),message=message)
+        (folder / "result.json").write_text(json.dumps(report, ensure_ascii=False,indent=2), encoding="utf-8")
         window.close()
         app.exit(0 if ok else 1)
 
+    def timeout():
+        if completed:return
+        stop.set()
+        if task is None or not task.isRunning():save(False,'Diagnostic timed out')
+
     QTimer.singleShot(250, finish)
-    QTimer.singleShot(25000, lambda: save(False, "diagnostic timed out"))
+    QTimer.singleShot(90000,timeout)
     return app.exec()

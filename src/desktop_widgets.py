@@ -1067,7 +1067,7 @@ class PlatformPage(QWidget):
         if generation is not None and generation != self.materials_generation:
             return
         result = result if isinstance(result, dict) else {}
-        if result.get('code') in {'OPENING_FORM', 'SOURCE_TYPE_CHANGING', 'BOOK_SEARCH_STARTED'} and attempt < 5:
+        if result.get('code') in {'OPENING_FORM', 'FORM_API_MISSING', 'SOURCE_TYPE_CHANGING', 'BOOK_SEARCH_STARTED'} and attempt < 5:
             if result.get('code') == 'BOOK_SEARCH_STARTED':
                 self.status.setText('正在使用平台搜索并选择建议短剧…')
                 delay = 1800

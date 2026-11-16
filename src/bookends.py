@@ -7,7 +7,7 @@ IMAGE_SUFFIXES={'.png','.jpg','.jpeg','.webp'}
 TRANSITIONS={'cut','fade','dissolve','wipeleft','wiperight','slideup'}
 
 
-def plan_bookends(options,body_duration):
+def plan_bookends(options,body_duration, *, should_stop=None):
     if not math.isfinite(body_duration) or body_duration<=0:
         raise ValueError('主体视频时长无效')
     segments=[]
@@ -17,7 +17,7 @@ def plan_bookends(options,body_duration):
         path=getattr(options,kind+'_path')
         if not path:continue
         image=Path(path).suffix.lower() in IMAGE_SUFFIXES
-        meta={} if image else probe(path)
+        meta={} if image else probe(path, **({'should_stop':should_stop} if should_stop else {}))
         duration=min(getattr(options,kind+'_duration'),float(meta.get('duration') or 0)) if not image else getattr(options,kind+'_duration')
         if duration<.5:raise ValueError('片头／片尾素材不足 0.5 秒')
         segments.append({'kind':kind,'path':path,'duration':duration,'image':image,'audio':bool(meta.get('audio'))})
@@ -28,8 +28,8 @@ def plan_bookends(options,body_duration):
         'duration':sum(s['duration'] for s in segments)-overlap*(len(segments)-1)}
 
 
-def compose_bookends(video_graph,audio_graph,audio_filter,audio_label,options,metadata,body_duration,indexes):
-    plan=plan_bookends(options,body_duration)
+def compose_bookends(video_graph,audio_graph,audio_filter,audio_label,options,metadata,body_duration,indexes, *, should_stop=None):
+    plan=plan_bookends(options,body_duration,should_stop=should_stop)
     fps=options.output_fps or metadata.get('frame_rate') or 30
     width,height=options.output_width,options.output_height
     graph=video_graph.removesuffix('[outv]')+'[join_body_raw]'

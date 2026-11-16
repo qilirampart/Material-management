@@ -207,7 +207,7 @@ class RegionEditorDialog(QDialog):
         target=Path(self.cache.name)/'frame.png'
         def execute():
             try:
-                meta=probe(self.source)
+                meta=probe(self.source,should_stop=self.stop_event.is_set)
                 if seconds>=meta['duration']:raise ValueError('截图时间超出原片时长')
                 run(['ffmpeg','-y','-v','error','-ss',str(seconds),'-i',self.source,'-frames:v','1',
                      '-vf','scale=1280:1280:force_original_aspect_ratio=decrease',str(target)],

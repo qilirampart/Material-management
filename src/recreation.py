@@ -11,6 +11,7 @@ from src.batch import save_json
 from src.task_input import local_files_to_rows
 from src.upload import safe_filename_part
 from src.media import validate_video
+from src.material_name_filter import normalize_exclude_name
 
 
 class RecreationStopped(RuntimeError):
@@ -74,12 +75,13 @@ class RecreationBatch:
         self.state = state
 
     @classmethod
-    def create(cls, root, dramas):
+    def create(cls, root, dramas, *, exclude_name=''):
+        exclude_name=normalize_exclude_name(exclude_name)
         run_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
         folder = Path(root) / '素材再创作' / run_id
         folder.mkdir(parents=True, exist_ok=False)
         batch = cls(folder, {'schema': 1, 'dramas': dramas, 'sources': [], 'outputs': [],
-                             'collection_status': 'not_started'})
+                             'collection_status': 'not_started','exclude_name':exclude_name})
         batch.save()
         return batch
 
@@ -106,6 +108,7 @@ class RecreationBatch:
                 or any(not isinstance(p, str) for p in x['files']) for x in uploads):
             raise ValueError('批次上传记录不完整')
         batch = cls(folder, state)
+        normalize_exclude_name(state.get('exclude_name',''))
         interrupted = False
         if recover_interrupted and state.get('collection_status') == 'in_progress':
             state['collection_status'] = 'paused'

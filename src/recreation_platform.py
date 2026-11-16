@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import date
 from pathlib import Path
+from src.material_name_filter import normalize_exclude_name,name_is_excluded
 from urllib.parse import urlsplit
 
 import requests
@@ -62,6 +63,7 @@ def build_platform_job_script(job_id, operation, payload):
       }else if(args.operation==='list'){
         path='/material/material/cardList';
         params={bookId:args.drama_id,adTargetType:'play',sourceType:'video',
+          excludeMaterialName:args.exclude_name||'',
           materialName:args.keyword,uploadTimeBegin:args.start_date,uploadTimeEnd:args.end_date,
           appName:'-1',offset:(args.page-1)*100,limit:100};
         callback=data=>{
@@ -180,9 +182,9 @@ class PlatformMaterialClient:
     def lookup(self, drama):
         return self._request('lookup', drama_id=drama['id'])
 
-    def fetch_page(self, drama, keyword, page, start_date, end_date):
+    def fetch_page(self, drama, keyword, page, start_date, end_date, *, exclude_name=''):
         result = self._request('list', drama_id=drama['id'], keyword=keyword, page=page,
-                               start_date=start_date, end_date=end_date)
+                               start_date=start_date, end_date=end_date,exclude_name=normalize_exclude_name(exclude_name))
         return parse_material_page(result, drama['id'], page)
 
     def source_url(self, material_id):
@@ -199,13 +201,15 @@ def validate_material_url(url):
     return url
 
 
-def collect_platform_materials(batch, client, start_date, end_date, *, progress=None, should_stop=None):
+def collect_platform_materials(batch, client, start_date, end_date, *, progress=None, should_stop=None,exclude_name=None):
+    exclude_name=normalize_exclude_name(batch.state.get('exclude_name','') if exclude_name is None else exclude_name)
     if date.fromisoformat(start_date) > date.fromisoformat(end_date):
         raise ValueError('开始日期不能晚于结束日期')
     dates = {'start': start_date, 'end': end_date}
     if batch.state.get('sources') and batch.state.get('query_dates', dates) != dates:
         raise ValueError('查询日期已改变，请新建批次；原批次素材保留')
     batch.state['query_dates'] = dates
+    batch.state['exclude_name']=exclude_name
     batch.state['collection_status'] = 'in_progress'
     batch.save()
     try:
@@ -221,13 +225,14 @@ def collect_platform_materials(batch, client, start_date, end_date, *, progress=
                 expected_total = None
                 def fetch(current, page):
                     nonlocal expected_total
-                    payload = client.fetch_page(current, keyword, page, start_date, end_date)
+                    extra={'exclude_name':exclude_name} if exclude_name else {}
+                    payload = client.fetch_page(current, keyword, page, start_date, end_date,**extra)
                     if expected_total is not None and payload['total'] != expected_total:
                         raise ValueError('素材总数在翻页过程中发生变化，请重新查询')
                     expected_total = payload['total']
                     return payload
                 def persist_page(current, items, page):
-                    batch.record_page(current, items, page)
+                    batch.record_page(current,[x for x in items if not name_is_excluded(x['name'],exclude_name)],page)
                     if progress:
                         progress({'phase': 'page', 'drama_id': current['id'], 'drama': current['name'],
                                   'keyword': keyword, 'page': page, 'matched': len(batch.state['sources']),
@@ -242,6 +247,7 @@ def collect_platform_materials(batch, client, start_date, end_date, *, progress=
         raise
     batch.save()
     return {'folder': str(batch.folder), 'count': len(batch.state['sources']),
+            'excluded':sum(name_is_excluded(x['name'],exclude_name) for x in batch.state['sources'] if x.get('source_material_id')),
             'stopped': batch.state['collection_status'] == 'paused'}
 
 
@@ -305,11 +311,16 @@ def download_platform_materials(batch, client, identities=None, *, transfer=None
     chosen = set(identities) if identities is not None else None
     items = [x for x in batch.state['sources'] if x.get('source_material_id')
              and (chosen is None or x['video_id'] in chosen)]
-    counts = {'completed': 0, 'failed': 0, 'skipped': 0, 'stopped': False, 'folder': str(batch.folder)}
+    exclude_name=normalize_exclude_name(batch.state.get('exclude_name',''))
+    counts = {'completed': 0, 'failed': 0, 'skipped': 0, 'excluded':0,'stopped': False, 'folder': str(batch.folder)}
     for index, item in enumerate(items, 1):
         if should_stop and should_stop():
             counts['stopped'] = True
             break
+        if name_is_excluded(item['name'],exclude_name):
+            counts['excluded']+=1
+            if progress:progress({'phase':'excluded','video_id':item['video_id'],'index':index,'total':len(items),'drama':item['drama']})
+            continue
         if item.get('path') and Path(item['path']).is_file() and item['download_status'] == 'downloaded':
             counts['skipped'] += 1
             continue

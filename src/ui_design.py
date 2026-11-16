@@ -5,7 +5,8 @@ import uuid
 import copy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer, QUrl
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QProcess, QTimer, QUrl
+from shiboken6 import isValid
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFormLayout, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QCheckBox,
@@ -80,6 +81,20 @@ class Background(QThread):
     def __init__(self, function, parent=None):
         super().__init__(parent)
         self.function = function
+        self.finished.connect(self._retire)
+
+    @Slot()
+    def _retire(self):
+        # Let every queued finished observer run before posting deferred deletion.
+        QTimer.singleShot(0, self.deleteLater)
+
+    def isRunning(self):
+        # Controllers retain the last task to query its activity after completion.
+        return isValid(self) and super().isRunning()
+
+    def deleteLater(self):
+        if isValid(self):
+            super().deleteLater()
 
     def run(self):
         try:
@@ -90,6 +105,8 @@ class Background(QThread):
                 self.failed.emit(str(exc))
             else:
                 self.failed.emit('操作失败：' + type(exc).__name__ + '。请检查配置、网络或文件权限。')
+        finally:
+            self.function = None
 
 
 class SettingsPage(QWidget):

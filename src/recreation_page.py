@@ -7,12 +7,13 @@ from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit, QComboBox,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
-    QFileDialog, QInputDialog, QDateEdit, QProgressBar, QMessageBox,
+    QFileDialog, QInputDialog, QDateEdit, QProgressBar, QMessageBox,QLineEdit,
 )
 from src.batch import save_json
 from src.desktop_widgets import PlatformPage, button, title, local_open
 from src.paths import APP_RUNTIME_ROOT
 from src.recreation import RecreationBatch, parse_dramas
+from src.material_name_filter import normalize_exclude_name,name_is_excluded
 from src.task_input import local_files_to_rows
 from src.ui_design import card, label, Background
 from src.variant_dialog import VariantDialog
@@ -67,6 +68,14 @@ class RecreationPage(QWidget):
             dates.addWidget(edit)
         dates.addStretch()
         box.addLayout(dates)
+        exclusions=QHBoxLayout();exclusions.addWidget(label('排除名称含'))
+        self.exclude_name=QLineEdit('小方块');self.exclude_name.setMaxLength(80)
+        self.exclude_name.setPlaceholderText('名称关键词；留空不过滤，不限制横竖版')
+        self.exclude_name.editingFinished.connect(self.apply_name_exclusion)
+        exclusions.addWidget(self.exclude_name,1)
+        self.exclude_apply=button('应用',self.apply_name_exclusion);exclusions.addWidget(self.exclude_apply)
+        box.addLayout(exclusions)
+        self.exclusion_hint=label('名称含“小方块”的素材不下载；正常横版不受影响。');box.addWidget(self.exclusion_hint)
         row = QHBoxLayout()
         self.drama_selector = QComboBox()
         row.addWidget(self.drama_selector, 1)
@@ -168,6 +177,8 @@ class RecreationPage(QWidget):
         try:
             for row in range(table.rowCount()):
                 item = table.item(row, 0)
+                if not item.flags() & Qt.ItemIsUserCheckable:
+                    item.setCheckState(Qt.Unchecked);continue
                 checked = action == 'all' or (action == 'invert' and item.checkState() != Qt.Checked)
                 item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
         finally:
@@ -194,17 +205,22 @@ class RecreationPage(QWidget):
             tasks.append(self.variant_dialog.task)
         return tasks
 
-    def work_in_progress(self):
+    def own_work_in_progress(self):
         # Keep ownership until queued progress/result/finished callbacks have run,
         # even if the worker thread has already returned.
         return self.collection_busy or bool(self.active_background_tasks())
+
+    def work_in_progress(self):
+        external = getattr(self, 'external_work_in_progress', None)
+        return self.own_work_in_progress() or bool(external and external())
 
     def create_batch(self):
         if self.work_in_progress():
             self.message.setText('请先完成当前任务')
             return
         try:
-            self.batch = RecreationBatch.create(self.output_root, parse_dramas(self.drama_input.toPlainText()))
+            self.batch = RecreationBatch.create(self.output_root, parse_dramas(self.drama_input.toPlainText()),
+                exclude_name=self.exclude_name.text())
             self.load_batch_view()
             self.message.setText('批次已创建，查询素材后可下载')
             self.remember_batch()
@@ -248,6 +264,7 @@ class RecreationPage(QWidget):
             self.message.setText(str(exc))
 
     def load_batch_view(self):
+        self.exclude_name.setText(self.batch.state.get('exclude_name',''))
         self.summary.setText('当前批次：' + self.batch.folder.name + ' · 独立于原素材任务')
         self.collection_status.setText('查询“二创”与“精剪原片” · 默认覆盖历史上传日期')
         self.collection_bar.setRange(0, 1)
@@ -279,6 +296,7 @@ class RecreationPage(QWidget):
             self.create_batch()
         if not self.batch:
             return
+        if not self.apply_name_exclusion():return
         try:
             proposed = parse_dramas(self.drama_input.toPlainText())
         except ValueError as exc:
@@ -297,8 +315,10 @@ class RecreationPage(QWidget):
     def start_downloads(self, selected_only):
         if not self.batch or self.work_in_progress():
             return
+        if not self.apply_name_exclusion():return
         indices = set(self.checked_rows(self.source_table))
         items = [x for i, x in enumerate(self.batch.state['sources']) if x.get('source_material_id')
+                 and not name_is_excluded(x['name'],self.batch.state.get('exclude_name',''))
                  and (not selected_only or i in indices)]
         pending = [x for x in items if not (x.get('path') and Path(x['path']).is_file()
                                             and x['download_status'] == 'downloaded')]
@@ -346,6 +366,7 @@ class RecreationPage(QWidget):
         task.failed.connect(self.collection_failed)
         task.finished.connect(self.collection_finished)
         self._set_collection_busy(True)
+        self.message.clear()
         self.collection_status.setText('正在连接智投素材管理…')
         self.collection_bar.setRange(0, 0)
         self.collection_bar.setFormat('%p%')
@@ -356,6 +377,7 @@ class RecreationPage(QWidget):
         for control in (self.input_card, self.query_button, self.import_button, self.drama_selector,
                         self.download_button, self.download_selected_button, self.date_start, self.date_end):
             control.setEnabled(not busy)
+        self.exclude_name.setEnabled(not busy);self.exclude_apply.setEnabled(not busy)
         self.stop_button.setEnabled(busy)
 
     def _sync_collection_state(self):
@@ -365,7 +387,7 @@ class RecreationPage(QWidget):
             self.message.setText('批次记录读取失败，暂保留上次显示；请检查保存目录和文件权限后重新打开批次')
             return False
         self.batch = updated
-        self.refresh_sources()
+        self.refresh_sources(incremental=True)
         for drama in self.batch.state['dramas']:
             for selector in (self.drama_selector, self.upload_drama):
                 index = selector.findData(drama['id'])
@@ -384,7 +406,7 @@ class RecreationPage(QWidget):
             text = f"{event['drama']} · {event['keyword']} 第 {event['page']} 页 · 已收集 {event['matched']} 条"
         else:
             names = {'resolving': '读取原始视频地址', 'validating': '校验本地视频',
-                     'downloaded': '下载完成', 'failed': '下载失败', 'downloading': '下载中'}
+                     'downloaded': '下载完成', 'failed': '下载失败', 'downloading': '下载中','excluded':'名称已排除'}
             text = f"{event['index']} / {event['total']} · {event['drama']} · {names.get(phase, phase)}"
             if event.get('message'):
                 text += ' · ' + event['message']
@@ -415,6 +437,7 @@ class RecreationPage(QWidget):
             message = f"已找到 {result['count']} 条素材，可以下载全部或选中项"
         else:
             message = f"完成 {result['completed']} 条 · 失败 {result['failed']} 条 · 跳过 {result['skipped']} 条"
+        if result.get('excluded'):message+=f" · 名称排除 {result['excluded']} 条"
         self.message.setText(message + (' · 已停止' if result.get('stopped') else ''))
         return True
 
@@ -467,22 +490,73 @@ class RecreationPage(QWidget):
             except (OSError, ValueError) as exc:
                 self.message.setText(str(exc))
 
-    def refresh_sources(self):
+    def apply_name_exclusion(self):
+        if not self.batch:return True
+        old=self.batch.state.get('exclude_name','')
+        if self.work_in_progress():
+            self.exclude_name.setText(old);return False
+        try:
+            value=normalize_exclude_name(self.exclude_name.text())
+            if value!=old:
+                updated=RecreationBatch.load(self.batch.folder,recover_interrupted=False)
+                updated.state['exclude_name']=value;updated.save();self.batch=updated
+                self.refresh_sources()
+            self.exclude_name.setText(value);return True
+        except (ValueError,OSError) as exc:
+            self.exclude_name.setText(old);self.message.setText('筛选条件未保存：'+str(exc));return False
+
+    def refresh_sources(self, *, incremental=False):
+        table = self.source_table
+        blocked = table.blockSignals(True)
+        updates = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        try:
+            self._render_sources(incremental=incremental)
+        finally:
+            table.blockSignals(blocked)
+            table.setUpdatesEnabled(updates)
+
+    def _render_sources(self, *, incremental=False):
         sources = self.batch.state['sources'] if self.batch else []
         checked = self._checked_identities(self.source_table)
-        self.source_table.blockSignals(True)
+        previous = getattr(self, '_source_render_signatures', {}) if incremental else {}
+        signatures = {}
         self.source_table.setRowCount(len(sources))
+        keyword=self.batch.state.get('exclude_name','') if self.batch else ''
+        excluded=0
         for index, item in enumerate(sources):
-            self.source_table.setItem(index, 0, self._check_item(item['video_id'], checked))
+            blocked=bool(item.get('source_material_id') and name_is_excluded(item['name'],keyword))
+            excluded += int(blocked)
+            signature = tuple(item.get(key, '') for key in ('drama','name','path','download_status','download_error')) + (blocked,)
+            signatures[item['video_id']] = signature
+            cell = self.source_table.item(index, 0)
+            if cell is not None and cell.data(Qt.UserRole) == item['video_id']:
+                if previous.get(item['video_id']) == signature:
+                    continue
+            else:
+                cell = self._check_item(item['video_id'], checked)
+                self.source_table.setItem(index, 0, cell)
+            cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | (Qt.NoItemFlags if blocked else Qt.ItemIsUserCheckable))
+            if blocked:
+                cell.setCheckState(Qt.Unchecked)
             status = '本地可用' if item.get('path') and Path(item['path']).is_file() else {
                 'pending': '待下载', 'downloading': '下载中', 'failed': '下载失败',
                 'downloaded': '文件缺失', 'local': '文件缺失',
             }.get(item.get('download_status'), '待下载')
+            if blocked:status='名称已排除'+('（已下载文件保留）' if item.get('path') else '')
             for column, value in enumerate((item['drama'], item['name'],
                                            status, item.get('path', '')), 1):
-                self.source_table.setItem(index, column, QTableWidgetItem(value))
-                self.source_table.item(index, column).setToolTip(item.get('download_error') or value)
-        self.source_table.blockSignals(False)
+                existing = self.source_table.item(index, column)
+                if existing is None:
+                    existing = QTableWidgetItem(value)
+                    self.source_table.setItem(index, column, existing)
+                elif existing.text() != value:
+                    existing.setText(value)
+                tooltip = item.get('download_error') or value
+                if existing.toolTip() != tooltip:
+                    existing.setToolTip(tooltip)
+        self._source_render_signatures = signatures
+        self.exclusion_hint.setText(f'名称含“{keyword}”的素材不下载；当前已入库命中 {excluded} 条。' if keyword else '不按名称排除；横竖版均可下载。')
         self._update_checked_count(self.source_table)
 
     def refresh_outputs(self):

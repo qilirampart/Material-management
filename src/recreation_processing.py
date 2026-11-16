@@ -215,6 +215,7 @@ class ProcessingWorkbench(QWidget):
             for item in items:
                 groups[item['batch_folder']].append(item)
             outputs, failed = [], []
+            stopped, stop_reason = False, ''
             for folder, sources in groups.items():
                 if self.stop_event.is_set():
                     break
@@ -224,7 +225,10 @@ class ProcessingWorkbench(QWidget):
                 batch.add_outputs(result['outputs'])
                 outputs.extend(result['outputs'])
                 failed.extend(result['failed'])
-            return {'outputs': outputs, 'failed': failed, 'stopped': self.stop_event.is_set()}
+                if result['stopped']:
+                    stopped, stop_reason = True, result.get('stop_reason', '')
+                    break
+            return {'outputs': outputs, 'failed': failed, 'stopped': stopped or self.stop_event.is_set(), 'stop_reason':stop_reason}
         task = Background(execute, self)
         self.task, self.busy = task, True
         task.progress.connect(self.show_progress)
@@ -240,6 +244,12 @@ class ProcessingWorkbench(QWidget):
         task.start()
 
     def show_progress(self, event):
+        if event['phase'] == 'budget_scan':
+            self.status.setText(f"检查磁盘预算 · 读取视频信息 {event['index']} / {event['total']}")
+            return
+        if event['phase'] == 'budget':
+            self.status.setText(f"预计新增 {event['estimated_bytes'] / 1048576:.1f} MB · 检查磁盘余量，另保留 256 MB…")
+            return
         self.status.setText(f"{event['index']} / {event['total']} · {event['video_id']} · "
                             + {'started': '读取视频', 'encoding': '转码中', 'validating': '校验中',
                                'completed': '完成', 'failed': '失败'}.get(event['phase'], event['phase']))
@@ -259,7 +269,7 @@ class ProcessingWorkbench(QWidget):
             self.preview_dialog.player.play()
             return
         self.status.setText(f"完成 {len(result['outputs'])} 个 · 失败 {len(result['failed'])} 个"
-                            + (' · 已停止' if result['stopped'] else ' · 已保存到来源批次'))
+                            + (' · ' + (result.get('stop_reason') or '已停止') if result['stopped'] else ' · 已保存到来源批次'))
         if result['outputs']:
             self.last_output = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)

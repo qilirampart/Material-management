@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 from src.batch import save_json
+from src.disk_budget import DiskSpaceLow, estimate_output_bytes, require_disk_space
 from src.media import (
     FFmpegCancelled, FFmpegError, MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
     probe, run, transcode_for_upload_bitrate, validate_video,
@@ -489,7 +490,7 @@ def _render_micro(source, target, options, metadata, clip_start, clip_duration,
         bookend_inputs=[];plan=None
         if options.intro_path or options.outro_path:
             video_graph,audio_label,plan=compose_bookends(video_graph,audio_graph,audio_filter,audio_label,
-                options,metadata,duration,extra_input_indexes(options))
+                options,metadata,duration,extra_input_indexes(options),should_stop=should_stop)
             audio_filter=None
             bookend_inputs=[(s['path'],s['duration']) for s in plan['segments'] if s['kind']!='body']
         else:video_graph+=audio_graph
@@ -527,7 +528,7 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
         raise ValueError('预览起点须非负，时长须为 1–30 秒')
     if Path(source).resolve() == Path(target).resolve():
         raise ValueError('预览不能覆盖原片')
-    metadata = probe(source)
+    metadata = probe(source, **({'should_stop': should_stop} if should_stop else {}))
     options=effective_clip_options(options,metadata['duration'])
     full_body=(metadata['duration']-options.trim_start-options.trim_end)/options.speed
     if preview_section not in {'body','head','tail'}:raise ValueError('预览类型无效')
@@ -548,11 +549,11 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
     if preview_section!='body' and options.transition!='cut' and clip_duration/options.speed<2*options.transition_duration:
         raise ValueError(f'转场预览的主体时长至少需 {2*options.transition_duration:g} 秒')
     if (options.intro_path or options.outro_path) and full_body>0:
-        plan_bookends(options,full_body)  # Validate the actual full composition before previewing a seam.
+        plan_bookends(options,full_body,should_stop=should_stop)  # Validate the actual full composition before previewing a seam.
     cover_offset=(clip_start-options.trim_start)/options.speed
     if preview_section=='head':cover_offset=0
     elif options.intro_path:
-        full_plan=plan_bookends(options,full_body)
+        full_plan=plan_bookends(options,full_body,should_stop=should_stop)
         cover_offset+=full_plan['segments'][0]['duration']-full_plan['overlap']
     result = _render_micro(source, target, render_options, metadata, clip_start, clip_duration,
                            progress=progress, should_stop=should_stop,
@@ -575,6 +576,36 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
         save_json(Path(result['manifest']), {'options': asdict(options), **result})
 
     persist()
+    metadata_cache = {}
+    estimated_bytes = 0
+    try:
+        for budget_index, item in enumerate(items, 1):
+            if should_stop and should_stop():
+                raise FFmpegCancelled('已停止磁盘预算检查')
+            if progress:
+                progress({'phase':'budget_scan','index':budget_index,'total':len(items),'video_id':item['video_id']})
+            source = Path(item['path']).resolve()
+            try:
+                if str(source) not in metadata_cache:
+                    meta = dict(probe(source, **({'should_stop': should_stop} if should_stop else {})))
+                    if 'file_size_bytes' not in meta:
+                        meta['file_size_bytes'] = source.stat().st_size
+                    metadata_cache[str(source)] = meta
+                estimated_bytes += estimate_output_bytes(metadata_cache[str(source)], options) * options.variants
+            except FFmpegCancelled:
+                raise
+            except (OSError, ValueError, FFmpegError, subprocess.SubprocessError):
+                # Invalid inputs keep their existing per-item failure behavior.
+                continue
+        result['estimated_bytes'] = estimated_bytes
+        if progress:
+            progress({'phase':'budget','index':0,'total':total,'video_id':'磁盘检查','estimated_bytes':estimated_bytes})
+        if estimated_bytes:
+            require_disk_space(root, estimated_bytes)
+    except (DiskSpaceLow, FFmpegCancelled) as exc:
+        result.update(stopped=True, stop_reason=str(exc))
+        persist()
+        return result
     for item in items:
         source_metadata = None
         source_md5 = None
@@ -593,7 +624,9 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 resolved=(replace(frozen,uploader=options.uploader).validate() if frozen is not None
                     else resolve_variant_options(options,str(source),version)) if options.mode=='micro' else options
                 if source_metadata is None:
-                    source_metadata = probe(source)
+                    source_metadata = metadata_cache.get(str(source))
+                    if source_metadata is None:
+                        source_metadata = probe(source, **({'should_stop': should_stop} if should_stop else {}))
                     source_md5 = file_md5(source, should_stop)
                 mode_name = '改md5' if options.mode == 'md5' else '微创新'
                 drama = safe_filename_part(item.get('drama') or '未命名剧集') or '未命名剧集'
@@ -601,6 +634,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 target_dir = root / drama / mode_name
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target = target_dir / f'APP-繁花-王俨-{mode_name}-{drama}-{uploader}-{datetime.now():%y%m%d}-{index:03d}.mp4'
+                require_disk_space(target_dir, estimate_output_bytes(source_metadata, resolved))
                 if options.mode == 'md5':
                     run(['ffmpeg', '-y', '-v', 'error', '-i', str(source), '-map', '0:v:0',
                          '-map', '0:a?', '-c', 'copy', '-metadata', f'comment=variant-{uuid.uuid4().hex}',
@@ -632,6 +666,10 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 })
                 if progress:
                     progress({'phase': 'completed', 'index': index, 'total': total, 'video_id': item['video_id']})
+            except DiskSpaceLow as exc:
+                result.update(stopped=True, stop_reason=str(exc))
+                persist()
+                return result
             except FFmpegCancelled:
                 if target:
                     target.unlink(missing_ok=True)

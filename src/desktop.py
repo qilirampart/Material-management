@@ -241,6 +241,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(scroll)
         from src.recreation_workflow import RecreationWorkflowPage
         self.recreation = RecreationWorkflowPage(self.config, restore=restore)
+        self.recreation.external_work_in_progress = self.legacy_work_in_progress
         self.recreation.task_finished.connect(lambda: QTimer.singleShot(0, self.close) if self.close_after else None)
         self.add_page(self.recreation)
         self.navigation.currentRowChanged.connect(self.change_page)
@@ -701,7 +702,12 @@ class MainWindow(QMainWindow):
         return [task for task in tasks if task is not None and task.isRunning()]
 
     def has_active_background_tasks(self):
-        return bool(self.active_background_tasks())
+        return bool(self.active_background_tasks()) or self.recreation.own_work_in_progress()
+
+    def legacy_work_in_progress(self):
+        tasks = [self.io_task, self.quality_task, self.bitrate_task]
+        tasks.extend(self.platform.active_background_tasks())
+        return self.is_running() or any(task is not None and task.isRunning() for task in tasks)
 
     def set_busy(self, busy):
         for control in [
@@ -1076,6 +1082,7 @@ class MainWindow(QMainWindow):
         self.config = config
         self.platform.config = config
         self.platform.address.setText(config.get("platform_url", ""))
+        self.recreation.apply_config(config)
         save_json(self.config_path, config)
         self.refresh_fingerprint()
         self.refresh_table()
@@ -1338,8 +1345,8 @@ class MainWindow(QMainWindow):
             self.review.splitter.setOrientation(Qt.Vertical if self.width() < 1150 else Qt.Horizontal)
 
     def closeEvent(self, event):
-        if self.has_active_background_tasks() or self.recreation.work_in_progress():
-            if self.recreation.work_in_progress():
+        if self.has_active_background_tasks() or self.recreation.own_work_in_progress():
+            if self.recreation.own_work_in_progress():
                 self.close_after = True
                 self.recreation.request_stop_all()
                 self.statusBar().showMessage('正在停止再创作任务，保存进度后退出；平台已开始的上传可在网页查看。')
@@ -1368,6 +1375,8 @@ class MainWindow(QMainWindow):
 
 
 def configure_app(app):
+    from src.parameter_wheel import install_parameter_wheel_guard
+    install_parameter_wheel_guard(app)
     # Qt's offscreen platform may not discover Windows system fonts automatically.
     if "Microsoft YaHei" not in QFontDatabase.families():
         import os

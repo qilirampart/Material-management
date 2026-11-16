@@ -25,6 +25,11 @@ UPLOAD_SIZE_SAFETY_RATIO = 0.98
 UPLOAD_AUDIO_RESERVE_KBPS = 192
 
 
+def ffmpeg_thread_budget():
+    """Bound per-codec/filter parallelism; the UI schedules one heavy job."""
+    return min(4, max(1, os.cpu_count() or 1))
+
+
 def target_bitrate_for_upload_size(
     duration_seconds,
     *,
@@ -198,9 +203,12 @@ def hardware_h264_encoder() -> str | None:
         return None
 
 
-def probe(path):
+def probe(path, *, should_stop=None):
+    if should_stop and should_stop():
+        raise FFmpegCancelled('已停止读取视频信息')
     path = Path(path)
-    info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]))
+    info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+                          **({'should_stop': should_stop, 'timeout': 30} if should_stop else {})))
     streams = info.get("streams", [])
     videos = [s for s in streams if s.get("codec_type") == "video"]
     if not videos:
@@ -236,10 +244,11 @@ def ensure_video_has_decodable_frame(path):
 
 
 def validate_video(path, should_stop=None):
-    metadata = probe(path)
+    metadata = probe(path, **({'should_stop': should_stop} if should_stop else {}))
     # Decode all streams once before treating a completed download as reusable.
     run(
-        ["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"],
+        ["ffmpeg", "-v", "error", "-xerror", "-threads", str(ffmpeg_thread_budget()),
+         "-i", str(path), "-f", "null", "-"],
         timeout=600,
         should_stop=should_stop,
     )
@@ -276,7 +285,7 @@ def transcode_for_upload_bitrate(
     target_kbps = min(int(target_kbps), MAXIMUM_UPLOAD_BITRATE_KBPS)
     if should_stop and should_stop():
         raise FFmpegCancelled("已停止码率提升")
-    source_metadata = probe(source_path)
+    source_metadata = probe(source_path, **({'should_stop': should_stop} if should_stop else {}))
     visual_inputs=tuple(visual_inputs or ())
     bookend_inputs=tuple(bookend_inputs or ())
     if (image_overlay_path or background_audio_path or visual_inputs or bookend_inputs or cover_overlay_path) and (not video_filter or not output_duration):
@@ -305,32 +314,33 @@ def transcode_for_upload_bitrate(
     output_path.unlink(missing_ok=True)
     timeout = max(600, round(source_metadata["duration"] * 6))
     def command_for(encoder):
-        command = ["ffmpeg", "-y", "-v", "error"]
+        threads = str(ffmpeg_thread_budget())
+        command = ["ffmpeg", "-y", "-v", "error", "-filter_threads", threads, "-filter_complex_threads", threads]
         if clip_start:
             command += ["-ss", str(clip_start)]
         if clip_duration is not None:
             command += ["-t", str(clip_duration)]
-        command += ["-i", str(source_path)]
+        command += ["-threads", threads, "-i", str(source_path)]
         if image_overlay_path:
-            command += ['-loop', '1', '-i', str(image_overlay_path)]
+            command += ['-loop', '1', '-threads', threads, '-i', str(image_overlay_path)]
         if background_audio_path:
             audio_start=auxiliary_start if background_audio_start is None else background_audio_start
-            command += ['-stream_loop', '-1']+(['-ss',str(audio_start)] if audio_start else [])+['-i', str(background_audio_path)]
+            command += ['-stream_loop', '-1']+(['-ss',str(audio_start)] if audio_start else [])+['-threads', threads, '-i', str(background_audio_path)]
         for path in visual_inputs:
             loop=['-loop','1'] if Path(path).suffix.lower() in {'.png','.jpg','.jpeg','.webp'} else ['-stream_loop','-1']
             seek=['-ss',str(auxiliary_start)] if auxiliary_start and loop[0]=='-stream_loop' else []
-            command += loop+seek+['-i',str(path)]
+            command += loop+seek+['-threads', threads, '-i',str(path)]
         for path,duration in bookend_inputs:
             if Path(path).suffix.lower() in {'.png','.jpg','.jpeg','.webp'}:command+=['-loop','1']
-            command+=['-t',str(duration),'-i',str(path)]
-        if cover_overlay_path:command+=['-loop','1','-i',str(cover_overlay_path)]
+            command+=['-t',str(duration),'-threads',threads,'-i',str(path)]
+        if cover_overlay_path:command+=['-loop','1','-threads',threads,'-i',str(cover_overlay_path)]
         if video_filter:
             command += ["-filter_complex", video_filter, "-map", "[outv]"]
         else:
             command += ["-map", "0:v:0"]
         if not mute_audio:
             command += ['-map', audio_output_label or ('0:a:0?' if video_filter else '0:a?')]
-        command += ['-c:v', encoder]
+        command += ['-c:v', encoder, '-threads', threads]
         if encoder == "libx264":
             command += ["-preset", "veryfast", "-pix_fmt", "yuv420p"]
         elif encoder == "h264_nvenc":

@@ -61,15 +61,15 @@ class RecreationWorkspace:
         self.last_batch = folder
         self.save()
 
-    def create(self, text):
+    def create(self, text, *, exclude_name=''):
         result = []
         for drama in parse_dramas(text):
-            batch = RecreationBatch.create(self.root, [drama])
+            batch = RecreationBatch.create(self.root, [drama],exclude_name=exclude_name)
             self.register(batch)
             result.append(batch)
         return result
 
-    def import_files(self, paths):
+    def import_files(self, paths, *, exclude_name=''):
         result = []
         for filename in paths:
             path = Path(filename)
@@ -80,7 +80,7 @@ class RecreationWorkspace:
                 continue
             info = parse_upload_drama_filename(path)
             if info:
-                result.extend(self.create(info['drama_platform_id'] + '-' + info['drama_name']))
+                result.extend(self.create(info['drama_platform_id'] + '-' + info['drama_name'],exclude_name=exclude_name))
                 continue
             if path.suffix.lower() == '.xlsx':
                 from openpyxl import load_workbook
@@ -113,7 +113,7 @@ class RecreationWorkspace:
                 identity = str(int(value)) if isinstance(value, (int, float)) and int(value) == value else str(value).strip()
                 name = str(row[name_col] or '').strip() if name_col is not None and name_col < len(row) else ''
                 lines.append(identity + ('-' + name if name else ''))
-            result.extend(self.create('\n'.join(lines)))
+            result.extend(self.create('\n'.join(lines),exclude_name=exclude_name))
         return result
 
     def enqueue(self, folder, identities):
@@ -135,7 +135,11 @@ class RecreationWorkspace:
         for ref in self.inputs[mode]:
             folder = ref['folder']
             if folder not in batches:
-                batches[folder] = RecreationBatch.load(folder, recover_interrupted=False)
-            item = batches[folder].source_by_id(ref['video_id'])
+                batch = RecreationBatch.load(folder, recover_interrupted=False)
+                batches[folder] = {item['video_id']: item for item in batch.state['sources']}
+            try:
+                item = batches[folder][ref['video_id']]
+            except KeyError:
+                raise StopIteration('来源素材记录缺失：' + ref['video_id']) from None
             result.append({**item, 'batch_folder': folder})
         return result

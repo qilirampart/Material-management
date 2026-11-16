@@ -11,6 +11,7 @@ from src.recreation_workspace import RecreationWorkspace
 from src.recreation_processing import ProcessingWorkbench
 from src.recreation import RecreationBatch
 from src.recovery_dialog import RecoveryDialog
+from src.material_name_filter import name_is_excluded
 from src.recreation_platform import RecreationPlatformError
 from src.recreation_upload import upload_files, upload_script
 from src.ui_design import card, label, btn, Background
@@ -189,8 +190,8 @@ class RecreationWorkflowPage(RecreationPage):
             tasks.append(self.upload_task)
         return tasks
 
-    def work_in_progress(self):
-        return (super().work_in_progress() or getattr(self, 'upload_busy', False)
+    def own_work_in_progress(self):
+        return (super().own_work_in_progress() or getattr(self, 'upload_busy', False)
                 or getattr(getattr(self,'recovery_dialog',None),'busy',False)
                 or getattr(self, 'queue_running', False)
                 or any(getattr(getattr(self, n, None), 'busy', False) for n in ('md5', 'micro')))
@@ -204,6 +205,13 @@ class RecreationWorkflowPage(RecreationPage):
             self.workspace.register(self.batch)
         except OSError:
             self.message.setText('批次已保存，但工作区索引未能保存；下次请打开历史批次')
+
+    def apply_config(self, config):
+        # Only future batches use the new root. Existing jobs keep captured folders.
+        self.output_root = Path(config['output_root'])
+        self.workspace.root = self.output_root
+        self.platform.config = dict(config)
+        self.platform.address.setText(config.get('platform_url') or 'https://market.wuread.cn/market-admin/')
 
     def restore_last_batch(self):
         folder = self.workspace.last_batch
@@ -271,7 +279,7 @@ class RecreationWorkflowPage(RecreationPage):
         try:
             self.workspace.path = self.preferences_path
             self.workspace.root = self.output_root
-            batches = self.workspace.create(self.drama_input.toPlainText())
+            batches = self.workspace.create(self.drama_input.toPlainText(),exclude_name=self.exclude_name.text())
             self.batch = batches[0]
             self.load_batch_view()
             self.remember_batch()
@@ -308,7 +316,7 @@ class RecreationWorkflowPage(RecreationPage):
         try:
             self.workspace.path = self.preferences_path
             self.workspace.root = self.output_root
-            batches = self.workspace.import_files(paths)
+            batches = self.workspace.import_files(paths,exclude_name=self.exclude_name.text())
             if batches:
                 self.batch = batches[0]
                 self.load_batch_view()
@@ -335,7 +343,8 @@ class RecreationWorkflowPage(RecreationPage):
                 if item.checkState() != Qt.Checked:
                     continue
                 batch = RecreationBatch.load(item.data(Qt.UserRole))
-                ids = [x['video_id'] for x in batch.state['sources'] if x.get('source_material_id')]
+                ids = [x['video_id'] for x in batch.state['sources'] if x.get('source_material_id')
+                    and not name_is_excluded(x['name'],batch.state.get('exclude_name',''))]
                 if not ids:
                     raise ValueError('有批次尚未获取素材，请先获取再加入下载队列')
                 self.workspace.enqueue(batch.folder, ids)
@@ -484,7 +493,10 @@ class RecreationWorkflowPage(RecreationPage):
 
     def request_processing_import(self, mode, folder, identities):
         batch = RecreationBatch.load(folder, recover_interrupted=False)
-        selected = [batch.source_by_id(x) for x in identities]
+        index = {item['video_id']: item for item in batch.state['sources']}
+        if any(identity not in index for identity in identities):
+            self.message.setText('来源素材记录缺失，请重新选择批次');return
+        selected = [index[x] for x in identities]
         missing = [x for x in selected if not x.get('path') or not Path(x['path']).is_file()]
         if not missing:
             self.complete_processing_import(mode, folder, identities)
@@ -505,7 +517,10 @@ class RecreationWorkflowPage(RecreationPage):
     def complete_processing_import(self, mode, folder, identities):
         try:
             batch = RecreationBatch.load(folder, recover_interrupted=False)
-            ready = [x for x in identities if (item := batch.source_by_id(x)).get('path') and Path(item['path']).is_file()]
+            index = {item['video_id']: item for item in batch.state['sources']}
+            if any(identity not in index for identity in identities):
+                raise ValueError('来源素材记录缺失，请重新选择批次')
+            ready = [x for x in identities if (item := index[x]).get('path') and Path(item['path']).is_file()]
             self.workspace.add_inputs(mode, folder, ready)
             panel = self.md5 if mode == 'md5' else self.micro
             panel.refresh()

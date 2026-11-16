@@ -174,7 +174,11 @@ class VariantDialog(QDialog):
         task.start()
 
     def show_progress(self, event):
-        phases = {'started': '读取视频', 'encoding': '转码中', 'validating': '校验音画',
+        if event['phase'] == 'budget':
+            self.status.setText(f"预计新增 {event['estimated_bytes'] / 1048576:.1f} MB · 检查磁盘余量，另保留 256 MB…")
+            self.bar.setRange(0, 0)
+            return
+        phases = {'budget_scan': '检查磁盘预算', 'started': '读取视频', 'encoding': '转码中', 'validating': '校验音画',
                   'completed': '完成', 'failed': '失败'}
         self.status.setText(f"{event['index']} / {event['total']} · {event['video_id']} · "
                             + phases.get(event['phase'], event['phase']))
@@ -190,7 +194,7 @@ class VariantDialog(QDialog):
             self.preview_path = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)
         self.status.setText(f"本轮完成 {len(result['outputs'])} 个，失败 {len(result['failed'])} 个"
-                            + ('；已停止' if result['stopped'] else '；请预览成品'))
+                            + ('；' + (result.get('stop_reason') or '已停止') if result['stopped'] else '；请预览成品'))
         self.log.appendPlainText('处理记录：' + result['manifest'])
 
     def finished_processing(self):
