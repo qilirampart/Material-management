@@ -310,6 +310,10 @@ def transcode_for_upload_bitrate(
             f"也预计约 {estimated_minimum_size} MB，超过平台 510 MB 上限"
         )
     target_kbps = size_limited_target_kbps
+    # A two-second VBV buffer can burst past the average upload ceiling on
+    # short clips when a still intro transitions into motion (FFmpeg 9/x264).
+    # Keep short previews tightly bounded; retain the normal buffer for films.
+    buffer_kbps = target_kbps // 2 if float(budget_duration or 0) <= 5 else target_kbps * 2
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
     timeout = max(600, round(source_metadata["duration"] * 6))
@@ -353,7 +357,7 @@ def transcode_for_upload_bitrate(
             "-b:v", f"{target_kbps}k",
             "-minrate", f"{target_kbps}k",
             "-maxrate", f"{target_kbps}k",
-            "-bufsize", f"{target_kbps * 2}k",
+            "-bufsize", f"{buffer_kbps}k",
         ]
         if encoder == "libx264":
             command += ["-x264-params", "nal-hrd=cbr:filler=1:vbv-init=1"]

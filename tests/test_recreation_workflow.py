@@ -37,7 +37,7 @@ class WorkflowTests(unittest.TestCase):
             page.preferences_path = new_root / 'prefs.json'
             page.drama_input.setPlainText('4100-测试剧')
             page.create_batch()
-            self.assertTrue(str(page.batch.folder).startswith(str(new_root)))
+            self.assertTrue(page.batch.folder.is_relative_to(new_root.resolve()))
             self.assertTrue(page.preferences_path.is_file())
             self.assertFalse((original_root / 'prefs.json').exists())
             self.assertEqual(page.workspace.path, page.preferences_path)

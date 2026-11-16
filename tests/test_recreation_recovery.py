@@ -48,7 +48,7 @@ class RecoveryTests(unittest.TestCase):
             plan=inspect_manifest_recovery(local_manifest)
             self.assertEqual(plan['entries'][0]['status'],'ready')
             recovered,count=commit_manifest_recovery(plan,[0]);self.assertEqual(count,1)
-            self.assertTrue(Path(recovered.state['outputs'][0]['path']).is_relative_to(moved))
+            self.assertTrue(Path(recovered.state['outputs'][0]['path']).is_relative_to(moved.resolve()))
             self.assertEqual(RecreationBatch.load(batch.folder).state['outputs'],[])
 
     def test_missing_foreign_and_changed_files_never_enter_catalog(self):

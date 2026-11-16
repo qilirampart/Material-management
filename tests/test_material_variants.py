@@ -8,6 +8,12 @@ from src.media import FFmpegCancelled, probe, run
 
 
 class MaterialVariantTests(unittest.TestCase):
+    def test_mac_supplemental_chinese_font_is_available_without_pingfang(self):
+        from src.material_variants import _font_file
+        font = Path('/System/Library/Fonts/Supplemental/Songti.ttc')
+        with patch.object(Path, 'is_file', lambda path: path == font):
+            self.assertEqual(_font_file(), font)
+
     def test_preview_is_short_uses_current_effects_and_does_not_create_products(self):
         from src.material_variants import render_micro_preview
         with tempfile.TemporaryDirectory() as folder:

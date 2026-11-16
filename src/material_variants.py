@@ -310,6 +310,9 @@ def _font_file(name='default'):
     candidates = [
         preferred[name],windows/'msyh.ttc',
         Path('/System/Library/Fonts/PingFang.ttc'),
+        Path('/System/Library/Fonts/Supplemental/Songti.ttc'),
+        Path('/System/Library/Fonts/STHeiti Medium.ttc'),
+        Path('/System/Library/Fonts/Helvetica.ttc'),
         Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
     ]
     font = next((p for p in candidates if p.is_file()), None)
@@ -377,7 +380,7 @@ def build_video_filter(options, version=1, text_path=None, source_metadata=None,
         # Bound the radius by the actual cropped region, including after rotation.
         prepared += (f',split[clear][region];[region]crop=max(2\,trunc(iw*{options.mask_w/100}/2)*2):'
             f'max(2\,trunc(ih*{options.mask_h/100}/2)*2):iw*{options.mask_x/100}:ih*{options.mask_y/100},'
-            "boxblur=luma_radius='min(6,min(w,h)/2)':luma_power=1:chroma_radius=0:chroma_power=0[masked];"
+            "boxblur=luma_radius='min(6,trunc((min(w,h)-1)/2))':luma_power=1:chroma_radius=0:chroma_power=0[masked];"
             f'[clear][masked]overlay=main_w*{options.mask_x/100}:main_h*{options.mask_y/100}')
     time_filter = prepared+grid_chain(options)
     y = f'(H-h)*{options.vertical_position}'

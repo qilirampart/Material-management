@@ -21,6 +21,6 @@ class RecreationConfigSyncTests(unittest.TestCase):
             self.assertEqual(page.output_root,Path(folder)/'new')
             self.assertEqual(page.workspace.root,page.output_root)
             self.assertEqual(page.batch.folder,old);self.assertTrue(old.is_dir())
-            page.create_batch();self.assertTrue(page.batch.folder.is_relative_to(Path(folder)/'new'))
+            page.create_batch();self.assertTrue(page.batch.folder.is_relative_to((Path(folder)/'new').resolve()))
             self.assertIn(str(old),page.workspace.folders)
             delete(window);self.app.processEvents()

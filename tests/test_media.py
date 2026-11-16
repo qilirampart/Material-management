@@ -20,6 +20,16 @@ from src.media import (
 
 
 class MediaTests(unittest.TestCase):
+    @patch('src.media.hardware_h264_encoder', return_value=None)
+    @patch('src.media.probe', return_value={'duration': 2})
+    @patch('src.media.run')
+    @patch('src.media.validate_video', return_value={'video_bitrate_bps': 4200000})
+    def test_short_transcode_bounds_vbv_buffer_for_scene_changes(self, validate, encode, probe, hardware):
+        with tempfile.TemporaryDirectory() as folder:
+            transcode_for_upload_bitrate(Path(folder)/'source.mp4', Path(folder)/'out.mp4')
+        command = encode.call_args.args[0]
+        self.assertEqual(command[command.index('-bufsize')+1], '2100k')
+
     @patch('src.media.hardware_h264_encoder',return_value='h264_nvenc')
     @patch('src.media.probe',return_value={'duration':1})
     @patch('src.media.run')

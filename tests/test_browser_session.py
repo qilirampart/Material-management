@@ -23,8 +23,9 @@ class BrowserSessionTests(unittest.TestCase):
             factory.assert_called_once()
 
     def test_default_session_is_outside_program_runtime(self):
-        self.assertEqual(platform_browser_root({}).name, "browser")
-        self.assertIn("Dianzhong", str(platform_browser_root({})))
+        from src.paths import USER_DATA_ROOT, DEFAULT_USER_DATA_ROOT
+        self.assertEqual(platform_browser_root({}), USER_DATA_ROOT / 'browser')
+        self.assertIn('Dianzhong', str(DEFAULT_USER_DATA_ROOT))
 
     def test_profile_forces_cookie_and_permission_persistence(self):
         with tempfile.TemporaryDirectory() as folder:

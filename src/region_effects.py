@@ -59,6 +59,6 @@ def region_chain(regions,metadata,offset):
         else:
             result+=(f',split[roi_base{i}][roi_cut{i}];[roi_cut{i}]'
                 f'crop=max(2\\,trunc(iw*{w}/2)*2):max(2\\,trunc(ih*{h}/2)*2):iw*{x}:ih*{y},'
-                f"boxblur=luma_radius='min({region['strength']},min(w,h)/2)':luma_power=1:chroma_radius=0:chroma_power=0[roi_mask{i}];"
+                f"boxblur=luma_radius='min({region['strength']},trunc((min(w,h)-1)/2))':luma_power=1:chroma_radius=0:chroma_power=0[roi_mask{i}];"
                 f"[roi_base{i}][roi_mask{i}]overlay=x=main_w*{x}:y=main_h*{y}:enable='{enabled}'")
     return result
