@@ -81,3 +81,16 @@ class CleanupPageTests(unittest.TestCase):
             self.assertEqual(cleanup.preview.toPlainText(),'')
             self.assertFalse(cleanup.delete_button.isEnabled())
             page.close(); page.deleteLater(); self.app.processEvents()
+
+    def test_visible_guide_explains_selection_preview_confirmation_and_file_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page=RecreationWorkflowPage({'output_root':folder,
+                'recreation_preferences_path':str(Path(folder)/'prefs.json')},restore=False)
+            cleanup=page.file_cleanup
+            guide=cleanup.guide.text()
+            for text in ('1.', '文件夹', '视频文件', '2.', '预览待删除文件', '数量', '大小', '3.', '按钮才会启用'):
+                self.assertIn(text,guide)
+            for text in ('MP4', '配套封面', '文档', '批次记录', '不删除'):
+                self.assertIn(text,cleanup.safety_notice.text())
+            self.assertEqual(cleanup.preview_button.text(),'预览待删除文件')
+            page.close();page.deleteLater();self.app.processEvents()

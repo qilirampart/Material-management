@@ -33,7 +33,11 @@ class CleanupPage(QWidget):
         tools.addWidget(btn('全选当前层', lambda: self.tree.selectAll()))
         tools.addWidget(btn('清除选择', lambda: self.tree.clearSelection()))
         body.addLayout(tools)
-        body.addWidget(label('选中文件或文件夹 → 预览清理清单 → 确认删除。支持 Ctrl / Shift 多选。'))
+        self.guide = label(
+            '1. 选择范围：选中文件夹或具体的视频文件，支持 Ctrl / Shift 多选。\n'
+            '2. 预览清单：点击“预览待删除文件”，核对文件名、数量和大小。\n'
+            '3. 确认删除：预览完成且有可删除文件后，右侧删除按钮才会启用；核对后点击并确认。', 'summary')
+        body.addWidget(self.guide)
         split = QSplitter(Qt.Vertical)
         self.tree = QTreeView()
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -47,16 +51,17 @@ class CleanupPage(QWidget):
         split.addWidget(self.tree)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
-        self.preview.setPlaceholderText('清单只包含软件可确认归属的原片、加工成品（含配套封面）和上传暂存视频。')
+        self.preview.setPlaceholderText('选择范围后，点击“预览待删除文件”，这里会显示实际要删除的文件。')
         self.preview.setMinimumHeight(100)
         split.addWidget(self.preview)
         split.setStretchFactor(0, 3); split.setStretchFactor(1, 1)
         body.addWidget(split, 1)
-        body.addWidget(label('历史批次无需加入当前列表。批次记录、配置、外部原文件及无法确认归属的文件受保护；文件夹保留。'))
+        self.safety_notice = label('仅清理可确认归属的 MP4 视频及配套封面。文档、配置、批次记录、外部原文件及无法确认归属的文件不删除；文件夹保留。历史批次无需加入当前列表。')
+        body.addWidget(self.safety_notice)
         self.status = label('请选择要清理的文件或文件夹')
         body.addWidget(self.status)
         actions = QHBoxLayout()
-        self.preview_button = btn('预览所选范围', self.prepare)
+        self.preview_button = btn('预览待删除文件', self.prepare)
         self.delete_button = btn('确认删除清单中的文件…', self.confirm, True)
         self.delete_button.setEnabled(False)
         actions.addWidget(self.preview_button)
@@ -74,7 +79,7 @@ class CleanupPage(QWidget):
         self.preview.clear()
         self.delete_button.setEnabled(False)
         count = len(self.tree.selectionModel().selectedRows())
-        self.status.setText(f'已选 {count} 项 · 请预览实际可删除的文件')
+        self.status.setText(f'已选 {count} 项 · 下一步：点击“预览待删除文件”')
 
     def refresh(self):
         self.root = Path(self.owner.output_root).resolve()
