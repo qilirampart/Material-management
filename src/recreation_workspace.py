@@ -13,6 +13,7 @@ class RecreationWorkspace:
         self.path, self.root = Path(path), Path(root)
         self.folders, self.queue = [], []
         self.inputs = {'md5': [], 'micro': []}
+        self.input_issues = {'md5': [], 'micro': []}
         self.last_batch = ''
         self.queue_running = False
         self.load_error = ''
@@ -132,14 +133,35 @@ class RecreationWorkspace:
 
     def resolve_inputs(self, mode):
         batches, result = {}, []
+        issues = self.input_issues[mode] = []
         for ref in self.inputs[mode]:
             folder = ref['folder']
             if folder not in batches:
-                batch = RecreationBatch.load(folder, recover_interrupted=False)
-                batches[folder] = {item['video_id']: item for item in batch.state['sources']}
-            try:
-                item = batches[folder][ref['video_id']]
-            except KeyError:
-                raise StopIteration('来源素材记录缺失：' + ref['video_id']) from None
+                try:
+                    batch = RecreationBatch.load(folder, recover_interrupted=False)
+                    batches[folder] = {item['video_id']: item for item in batch.state['sources']}
+                except (OSError, ValueError):
+                    batches[folder] = {}
+            item = batches[folder].get(ref['video_id'])
+            if item is None:
+                issues.append(dict(ref))
+                continue
             result.append({**item, 'batch_folder': folder})
         return result
+
+    def forget_batches(self, folders):
+        """Remove explicit workspace references only; never remove files."""
+        from copy import deepcopy
+        previous = deepcopy((self.folders, self.queue, self.inputs, self.last_batch))
+        folders = set(folders)
+        self.folders = [x for x in self.folders if x not in folders]
+        self.queue = [x for x in self.queue if x['folder'] not in folders]
+        self.inputs = {mode: [x for x in refs if x['folder'] not in folders]
+                       for mode, refs in self.inputs.items()}
+        if self.last_batch in folders:
+            self.last_batch = ''
+        try:
+            self.save()
+        except OSError:
+            self.folders, self.queue, self.inputs, self.last_batch = previous
+            raise

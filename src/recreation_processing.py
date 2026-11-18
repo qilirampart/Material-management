@@ -122,6 +122,12 @@ class ProcessingWorkbench(QWidget):
         row.addWidget(settings, 2)
 
     def refresh(self):
+        if self.last_output and not Path(self.last_output).is_file():
+            self.last_output = ''
+            self.preview_button.setEnabled(False)
+        if self.mode == 'micro' and self.last_cover and not Path(self.last_cover).is_file():
+            self.last_cover = ''
+            self.cover_button.setEnabled(False)
         try:
             self.items = self.owner.workspace.resolve_inputs(self.mode)
         except (OSError, ValueError, StopIteration) as exc:
@@ -129,6 +135,18 @@ class ProcessingWorkbench(QWidget):
             return
         checked = self.owner._checked_identities(self.table)
         self.table.blockSignals(True)
+        try:
+            self._refresh_rows(checked)
+        finally:
+            self.table.blockSignals(False)
+        self.owner._update_checked_count(self.table)
+        issues = self.owner.workspace.input_issues[self.mode]
+        if issues:
+            self.status.setText(f'可显示 {len(self.items)} 条；跳过 {len(issues)} 条失效来源，不影响其他视频。')
+        elif self.status.text().startswith(('可显示 ', '来源记录不可用')):
+            self.status.setText(f'已载入 {len(self.items)} 条；缺失视频可重新下载或移出列表。')
+
+    def _refresh_rows(self, checked):
         self.table.setRowCount(len(self.items))
         completed = {}
         for row, item in enumerate(self.items):
@@ -138,17 +156,19 @@ class ProcessingWorkbench(QWidget):
             status = '待处理' if available else '文件缺失，请重新下载'
             folder = item['batch_folder']
             if folder not in completed:
-                batch = RecreationBatch.load(folder, recover_interrupted=False)
-                completed[folder] = {x.get('source_video_id') for x in batch.state['outputs']
-                                     if x.get('mode') == self.mode and Path(x['path']).is_file()}
+                try:
+                    batch = RecreationBatch.load(folder, recover_interrupted=False)
+                    completed[folder] = {x.get('source_video_id') for x in batch.state['outputs']
+                                         if x.get('mode') == self.mode and Path(x['path']).is_file()}
+                except (OSError, ValueError):
+                    completed[folder] = set()
+                    status = '批次记录已变化，请刷新后重试'
             if available and item['video_id'] in completed[folder]:
                 status = '已完成（可再次生成）'
             for col, value in enumerate((item['name'], Path(item['batch_folder']).name + ' · ' + item['drama'], status), 1):
                 cell = QTableWidgetItem(value)
                 cell.setToolTip(value)
                 self.table.setItem(row, col, cell)
-        self.table.blockSignals(False)
-        self.owner._update_checked_count(self.table)
 
     def options(self, sample):
         values = self.micro_settings.values() if self.mode == 'micro' else {}
@@ -219,10 +239,24 @@ class ProcessingWorkbench(QWidget):
             for folder, sources in groups.items():
                 if self.stop_event.is_set():
                     break
+                try:
+                    # Recheck the batch at execution time, not just import time.
+                    RecreationBatch.load(folder, recover_interrupted=False)
+                except (OSError, ValueError):
+                    failed.extend({'video_id': x['video_id'], 'error': '来源批次记录不可用，已跳过此批次'} for x in sources)
+                    continue
                 result = generate_variants(sources, Path(folder) / '加工成品', options,
                     progress=task.progress.emit, should_stop=self.stop_event.is_set,resolved_plans=frozen_plans)
-                batch = RecreationBatch.load(folder, recover_interrupted=False)
-                batch.add_outputs(result['outputs'])
+                try:
+                    batch = RecreationBatch.load(folder, recover_interrupted=False)
+                    batch.add_outputs(result['outputs'])
+                except (OSError, ValueError):
+                    failed.extend({'video_id': x['video_id'], 'error': '成品已保留，但批次记录未保存；请从加工记录恢复'} for x in sources)
+                    failed.extend(result['failed'])
+                    if result['stopped']:
+                        stopped, stop_reason = True, result.get('stop_reason', '')
+                        break
+                    continue
                 outputs.extend(result['outputs'])
                 failed.extend(result['failed'])
                 if result['stopped']:
@@ -298,10 +332,14 @@ class ProcessingWorkbench(QWidget):
     def remove_selected(self):
         if self.owner.work_in_progress():
             return
-        remove = set(self.owner.checked_rows(self.table))
-        self.owner.workspace.inputs[self.mode] = [x for i, x in enumerate(self.owner.workspace.inputs[self.mode]) if i not in remove]
+        remove = {(self.items[i]['batch_folder'], self.items[i]['video_id'])
+                  for i in self.owner.checked_rows(self.table)}
+        previous = self.owner.workspace.inputs[self.mode]
+        self.owner.workspace.inputs[self.mode] = [x for x in previous
+            if (x['folder'], x['video_id']) not in remove]
         try:
             self.owner.workspace.save()
             self.refresh()
         except OSError:
+            self.owner.workspace.inputs[self.mode] = previous
             self.status.setText('未能保存列表，请检查目录权限')

@@ -72,6 +72,8 @@ class RecreationWorkflowPage(RecreationPage):
         left.addWidget(self.resume_button)
         self.queue_summary = label('下载队列 0 个批次')
         left.addWidget(self.queue_summary)
+        self.cleanup_button = btn('清理勾选批次…', self.manage_batches)
+        left.addWidget(self.cleanup_button)
         body.addWidget(sidebar)
         # Existing dates, query controls, checks and transfer progress stay intact.
         self.batch_heading = label('选择或导入一个批次', 'section')
@@ -188,10 +190,13 @@ class RecreationWorkflowPage(RecreationPage):
                 tasks.append(panel.task)
         if getattr(self, 'upload_task', None) and self.upload_task.isRunning():
             tasks.append(self.upload_task)
+        if getattr(self, 'cleanup_task', None) and self.cleanup_task.isRunning():
+            tasks.append(self.cleanup_task)
         return tasks
 
     def own_work_in_progress(self):
         return (super().own_work_in_progress() or getattr(self, 'upload_busy', False)
+                or getattr(self, 'cleanup_busy', False)
                 or getattr(getattr(self,'recovery_dialog',None),'busy',False)
                 or getattr(self, 'queue_running', False)
                 or any(getattr(getattr(self, n, None), 'busy', False) for n in ('md5', 'micro')))
@@ -249,6 +254,8 @@ class RecreationWorkflowPage(RecreationPage):
         self.batch_list.setCurrentRow(active)
         self.batch_list.blockSignals(False)
         self.queue_summary.setText(f'下载队列 {len(self.workspace.queue)} 个批次' + (' · 已暂停' if not self.queue_running else ' · 运行中'))
+        if getattr(self, 'queue_skipped', 0):
+            self.queue_summary.setText(self.queue_summary.text() + f' · 已跳过 {self.queue_skipped} 个失效批次')
 
     def select_batch(self, index):
         if index < 0:
@@ -357,7 +364,115 @@ class RecreationWorkflowPage(RecreationPage):
         if self.work_in_progress() or not self.workspace.queue:
             return
         self.queue_running, self.queue_stopped = True, False
+        self.queue_skipped = 0
         self.start_next_download()
+
+    def manage_batches(self):
+        if self.work_in_progress():
+            self.message.setText('请先完成或停止当前任务，再清理批次')
+            return
+        folders = [self.batch_list.item(i).data(Qt.UserRole) for i in range(self.batch_list.count())
+                   if self.batch_list.item(i).checkState() == Qt.Checked]
+        if not folders:
+            self.message.setText('请在左侧勾选要清理的批次')
+            return
+        from src.recreation_cleanup import plan_cleanup
+        dialog = QDialog(self)
+        dialog.setWindowTitle('清理勾选批次')
+        dialog.resize(780, 590)
+        box = QVBoxLayout(dialog)
+        box.addWidget(label(f'已勾选 {len(folders)} 个批次', 'section'))
+        scope = QComboBox()
+        for text, value in (('仅移出批次列表（不删除任何文件）', 'forget'),
+                ('删除加工成品与配套封面（保留下载原片）', 'products'),
+                ('删除下载原片（保留加工成品）', 'originals'),
+                ('删除下载原片和加工成品（保留批次记录）', 'all')):
+            scope.addItem(text, value)
+        box.addWidget(scope)
+        box.addWidget(label('文件删除不经过回收站。外部原文件、批次记录和上传暂存保留。'))
+        preview = QPlainTextEdit(); preview.setReadOnly(True); box.addWidget(preview, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText('继续确认…')
+        buttons.button(QDialogButtonBox.Cancel).setText('取消')
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        box.addWidget(buttons)
+        planned = {}
+        def update_preview():
+            planned.clear()
+            if scope.currentData() == 'forget':
+                preview.setPlainText('移出这些批次及其下载队列、MD5／微创新来源引用。\n'
+                    '原片、成品和批次记录都保留，可通过“打开历史批次…”再次添加。\n\n' + '\n'.join(folders))
+                return
+            planned.update(plan_cleanup(folders, scope.currentData()))
+            lines = [f"将删除 {planned['files']} 个文件，合计 {planned['bytes']/1048576:.1f} MB（不等于实际释放空间）。",
+                     f"另有 {planned['protected']} 条外部或不属于本批次的文件记录受保护，不删除。",
+                     '已在外部删除的登记文件会同步为未下载／移出成品库。', '']
+            lines.extend(planned['errors'])
+            for batch in planned['batches']:
+                lines.append(batch['folder'])
+                for entry in batch['entries']:
+                    lines.append('  ' + entry['path'])
+                    if entry.get('cover', {}).get('signature'):
+                        lines.append('  ' + entry['cover']['path'])
+            preview.setPlainText('\n'.join(lines))
+        scope.currentIndexChanged.connect(update_preview); update_preview()
+        if dialog.exec() != QDialog.Accepted:
+            return
+        action = scope.currentData()
+        question = ('仅移出所选批次及相关队列／加工引用？不会删除文件。' if action == 'forget' else
+                    f"将永久删除预览中的 {planned['files']} 个文件，并同步相关记录。确定继续？")
+        if QMessageBox.question(self, '确认清理范围', question, QMessageBox.Yes | QMessageBox.No,
+                               QMessageBox.No) != QMessageBox.Yes:
+            return
+        if self.work_in_progress():
+            self.message.setText('已有任务启动，本次清理未执行')
+            return
+        self.run_batch_cleanup(folders, action, dict(planned))
+
+    def run_batch_cleanup(self, folders, action, plan):
+        if self.work_in_progress():
+            self.message.setText('当前任务尚未结束，未执行清理')
+            return
+        from src.recreation_cleanup import execute_cleanup
+        self.cleanup_busy = True
+        self.cleanup_button.setEnabled(False)
+        self.message.setText('正在清理勾选批次，请等待文件和记录同步完成…')
+        def execute():
+            if action == 'forget':
+                self.workspace.forget_batches(folders)
+                return {'deleted': 0, 'missing': 0, 'errors': [], 'protected': 0, 'forgotten': True}
+            return execute_cleanup(plan, self.workspace)
+        def completed(result):
+            if self.batch and str(self.batch.folder) not in self.workspace.folders:
+                self.batch = None
+                self.source_table.setRowCount(0)
+                self.batch_heading.setText('选择或导入一个批次')
+            elif self.batch:
+                try:
+                    self.batch = RecreationBatch.load(self.batch.folder, recover_interrupted=False)
+                    self.load_batch_view()
+                except (OSError, ValueError):
+                    self.batch = None; self.source_table.setRowCount(0)
+            for panel in (self.md5, self.micro): panel.refresh()
+            self.refresh_batch_list(); self.refresh_outputs()
+            # Any pending upload plan was built from pre-cleanup paths.
+            self.upload_groups = []; self.current_upload = None
+            self.next_upload_button.setEnabled(False)
+            summary = ('批次已移出，未删除文件。' if result.get('forgotten') else
+                f"清理完成：删除 {result['deleted']} 个文件，同步 {result['missing']} 个已缺失文件；"
+                f"保护 {result['protected']} 条外部文件记录。")
+            self.message.setText(summary + (f" {len(result['errors'])} 项未完成，请查看详情。" if result['errors'] else ''))
+            if result['errors']:
+                QMessageBox.warning(self, '清理未全部完成', summary + '\n\n' + '\n'.join(result['errors'][:12]))
+        def finished():
+            self.cleanup_busy = False
+            self.cleanup_button.setEnabled(True)
+            self.task_finished.emit()
+        self.cleanup_task = Background(execute, self)
+        self.cleanup_task.result.connect(completed)
+        self.cleanup_task.failed.connect(lambda msg: self.message.setText('清理未完成：' + msg))
+        self.cleanup_task.finished.connect(finished)
+        self.cleanup_task.start()
 
     def start_next_download(self):
         if self.queue_stopped or not self.workspace.queue:
@@ -368,14 +483,25 @@ class RecreationWorkflowPage(RecreationPage):
         job = self.workspace.queue[0]
         try:
             self.batch = RecreationBatch.load(job['folder'])
-            self.load_batch_view()
-            self.job_failed = False
-            self._start_browser_task('download', identities=job['identities'])
-            if not self.collection_busy:
+        except (OSError, ValueError):
+            # An unavailable old batch must not block independent queued jobs.
+            self.workspace.queue.pop(0)
+            try:
+                self.workspace.save()
+            except OSError:
+                self.workspace.queue.insert(0, job)
                 self.queue_running = False
-        except (OSError, ValueError) as exc:
+                self.message.setText('失效批次无法从队列移出，保存失败；未启动后续下载')
+                return
+            self.queue_skipped = getattr(self, 'queue_skipped', 0) + 1
+            self.message.setText(f'已跳过 {self.queue_skipped} 个不可用批次；其他批次继续，原目录未删除。')
+            QTimer.singleShot(0, self.start_next_download)
+            return
+        self.load_batch_view()
+        self.job_failed = False
+        self._start_browser_task('download', identities=job['identities'])
+        if not self.collection_busy:
             self.queue_running = False
-            self.message.setText(str(exc))
 
     def stop_collection(self):
         self.queue_stopped = True
@@ -611,7 +737,7 @@ class RecreationWorkflowPage(RecreationPage):
             self.message.setText('请先勾选处理完成的成品')
             return
         if any(not Path(x['path']).is_file() for x in selected):
-            self.message.setText('有成品文件缺失，请检查目录')
+            self.message.setText('有成品文件缺失，请刷新后取消勾选缺失项；其他成品仍可上传')
             return
         uploaded = sum(bool(x.get('uploaded_before')) for x in selected)
         if uploaded and QMessageBox.question(self, '确认重复上传', f'{uploaded} 条成品已有成功上传记录。是否再次上传？',
@@ -675,6 +801,14 @@ class RecreationWorkflowPage(RecreationPage):
         self.upload_ws = ws
         self.upload_status.setText('正在生成文件名并准备本批平台表单…')
         group = self.upload_groups[0]
+        # Files or batch records can disappear while the platform check runs.
+        try:
+            RecreationBatch.load(group['folder'], recover_interrupted=False)
+            if any(not Path(x['path']).is_file() for x in group['outputs']):
+                raise ValueError('成品文件已移走或删除')
+        except (OSError, ValueError):
+            self.upload_failed('本批文件或记录已失效，未启动上传；请刷新后重新勾选可用成品')
+            return
         self.current_upload = group
         rows, records = [], {}
         for item in group['outputs']:
@@ -739,7 +873,7 @@ class RecreationWorkflowPage(RecreationPage):
                 batch.state.setdefault('uploads', []).append(entry)
                 batch.save()
                 self.refresh_outputs()
-            except OSError:
+            except (OSError, ValueError):
                 self.message.setText(self.message.text() + ' 上传记录保存失败，请保留当前表单。')
         else:
             self.message.setText(result['message'])

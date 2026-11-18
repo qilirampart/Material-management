@@ -54,6 +54,7 @@ def smoke(output):
                         options,should_stop=stop.is_set)
                     if report['failed'] or report['stopped'] or len(report['outputs'])!=1:raise ValueError(str(report))
                     reports[mode]=report
+                reports['cleanup'] = cleanup_smoke(source, reports['micro']['outputs'][0]['path'], folder)
                 return reports
             task=Background(processing,window)
             task.result.connect(lambda value:result.update(processing=value))
@@ -98,3 +99,36 @@ def smoke(output):
     QTimer.singleShot(250, finish)
     QTimer.singleShot(90000,timeout)
     return app.exec()
+
+
+def cleanup_smoke(source, product, evidence_root):
+    """Check the packaged cleanup module against owned, temporary real media."""
+    import shutil
+    import tempfile
+    from src.recreation import RecreationBatch
+    from src.recreation_workspace import RecreationWorkspace
+    from src.recreation_cleanup import plan_cleanup, execute_cleanup
+    with tempfile.TemporaryDirectory(prefix='cleanup-smoke-', dir=evidence_root) as temp:
+        root = Path(temp)
+        workspace = RecreationWorkspace(root/'workspace.json', root)
+        missing, healthy = workspace.create('4100-旧批次\n4200-可用批次')
+        for batch in (missing, healthy):
+            batch.record_page(batch.state['dramas'][0], [{'id': '1', 'name': '二创'}], 1)
+            workspace.add_inputs('md5', batch.folder, [batch.state['sources'][0]['video_id']])
+        (missing.folder/'recreation.json').rename(missing.folder/'record.test-backup')
+        if len(workspace.resolve_inputs('md5')) != 1:
+            raise ValueError('Missing batch blocked valid processing input')
+        item = healthy.state['sources'][0]
+        raw = healthy.download_target(item); raw.parent.mkdir(parents=True)
+        shutil.copyfile(source, raw)
+        item.update(path=str(raw.resolve()), download_status='downloaded')
+        output = healthy.folder/'加工成品'/'run'/'video.mp4'; output.parent.mkdir(parents=True)
+        shutil.copyfile(product, output)
+        healthy.add_outputs([{'path': str(output), 'drama': '可用批次', 'mode': 'micro', 'metadata': {}}])
+        result = execute_cleanup(plan_cleanup([healthy.folder], 'products'), workspace)
+        if result['errors'] or output.exists() or not raw.is_file():
+            raise ValueError('Product cleanup did not preserve original video')
+        result = execute_cleanup(plan_cleanup([healthy.folder], 'originals'), workspace)
+        if result['errors'] or raw.exists() or workspace.resolve_inputs('md5'):
+            raise ValueError('Original cleanup did not sync processing input')
+        return {'ok': True, 'missing_batch_isolated': True, 'media_and_records_synced': True}

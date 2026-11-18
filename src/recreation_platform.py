@@ -28,15 +28,28 @@ class PlatformRateLimited(RecreationPlatformError):
         self.seconds = max(5, min(120, int(seconds or 5)))
 
 
-def material_ready_script():
+def _material_context_finder():
+    return """function findMaterial(w, depth=0) {
+      if(depth>4) return null;
+      try {
+        if(w.location.pathname.replace(/\/$/,'')==='/market-admin/material/material' && w.Material && w.$ax) return w;
+        for(const frame of w.document.querySelectorAll('iframe')) {
+          try { const found=findMaterial(frame.contentWindow,depth+1); if(found) return found; } catch(e) {}
+        }
+      } catch(e) {}
+      return null;
+    }"""
+
+
+def material_ready_script(open_page=True):
     return """(() => {
+      const findMaterial=__FINDER__;
+      if(findMaterial(window)) return {status:'ready'};
       if (location.pathname.includes('/login')) return {status:'login'};
-      const frame=[...document.querySelectorAll('iframe')].find(f=>new URL(f.src).pathname==='/market-admin/material/material');
-      if(frame?.contentWindow?.Material && frame.contentWindow.$ax) return {status:'ready'};
       const link=[...document.querySelectorAll('a')].find(a=>a.getAttribute('href')?.trim()==='/market-admin/material/material');
-      if(link&&!frame){link.click();return {status:'opening'};}
-      return {status:'opening'};
-    })()"""
+      if(link && __OPEN__) link.click();
+      return {status:'opening',opened:!!(link && __OPEN__)};
+    })()""".replace('__FINDER__', _material_context_finder()).replace('__OPEN__', 'true' if open_page else 'false')
 
 
 def build_platform_job_script(job_id, operation, payload):
@@ -45,8 +58,8 @@ def build_platform_job_script(job_id, operation, payload):
     data = json.dumps({'job': job_id, 'operation': operation, **payload}, ensure_ascii=False)
     return """(() => {
       const args=__PAYLOAD__;
-      const frame=[...document.querySelectorAll('iframe')].find(f=>new URL(f.src).pathname==='/market-admin/material/material');
-      const w=frame?.contentWindow;
+      const findMaterial=__FINDER__;
+      const w=findMaterial(window);
       if(!w?.Material||!w.$ax) return {error:'请先打开素材管理页面并登录'};
       const jobs=window.__dzRecreationJobs ||= {};
       const job=jobs[args.job]={pending:true};
@@ -87,7 +100,7 @@ def build_platform_job_script(job_id, operation, payload):
       }else ajax.set(params);
       ajax.start();
       return {started:true};
-    })()""".replace('__PAYLOAD__', data)
+    })()""".replace('__PAYLOAD__', data).replace('__FINDER__', _material_context_finder())
 
 
 def parse_material_page(payload, drama_id, page, size=100):
@@ -128,15 +141,18 @@ class PlatformMaterialClient:
 
     def ensure_ready(self):
         deadline = time.monotonic() + 60
+        open_page = True
         while time.monotonic() < deadline:
             self._check_stop()
-            result = evaluate_edge_page(self.ws_url, material_ready_script()) or {}
+            result = evaluate_edge_page(self.ws_url, material_ready_script(open_page)) or {}
+            if result.get('opened'):
+                open_page = False
             if result.get('status') == 'ready':
                 return
             if result.get('status') == 'login':
-                raise RecreationPlatformError('请先在“上传准备”页打开智投并扫码登录')
+                raise RecreationPlatformError('请回到“01 登录点众智投”重新登录后再查询')
             time.sleep(0.3)
-        raise RecreationPlatformError('素材管理页面未加载完成，请在平台页确认后重试')
+        raise RecreationPlatformError('素材管理页面未加载完成，尚未查询剧目；请回到“01 登录点众智投”确认登录并打开素材管理后重试')
 
     def _request(self, operation, **payload):
         for attempt in range(4):

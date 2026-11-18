@@ -23,7 +23,9 @@ class RecreationResourcePerformanceTests(unittest.TestCase):
                 result=workspace.resolve_inputs('micro')
             load.assert_called_once();self.assertEqual([x['video_id'] for x in result],[str(i) for i in reversed(range(1000))])
             workspace.inputs['micro'].append({'folder':str(batch.folder),'video_id':'missing'})
-            with patch('src.recreation_workspace.RecreationBatch.load',return_value=batch),self.assertRaises(StopIteration):workspace.resolve_inputs('micro')
+            with patch('src.recreation_workspace.RecreationBatch.load',return_value=batch):
+                self.assertEqual(len(workspace.resolve_inputs('micro')),1000)
+            self.assertEqual(workspace.input_issues['micro'],[{'folder':str(batch.folder),'video_id':'missing'}])
 
     def test_incremental_refresh_reuses_cells_and_selection(self):
         with tempfile.TemporaryDirectory() as folder:

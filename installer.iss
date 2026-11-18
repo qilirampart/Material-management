@@ -1,6 +1,6 @@
 [Setup]
 #ifndef AppVersion
-#define AppVersion "0.5.1"
+#define AppVersion "0.5.2"
 #endif
 #ifndef AppSourceDir
 #define AppSourceDir "release\素材投放助手"
