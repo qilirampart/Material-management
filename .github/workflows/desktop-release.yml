@@ -116,6 +116,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          PYTHONIOENCODING: utf-8
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DUpgradeTestBuild "/DAppVersion=${env:RELEASE_VERSION}" /DPackageOutputDir=output/upgrade-installer /DSetupBaseName=UpgradeAcceptance installer.iss
           if ($LASTEXITCODE -ne 0) { throw 'Upgrade acceptance installer compilation failed' }
