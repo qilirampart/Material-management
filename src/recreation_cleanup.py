@@ -71,6 +71,35 @@ def _selected_entries(entries, selections):
             (entry.get('cover') and selected(entry['cover']['path']))]
 
 
+def _discover_selected_batches(root, selections, errors):
+    """Find records from the selected filesystem scope, not just the recent index."""
+    found = set()
+    for selected in selections:
+        directory = selected if selected.is_dir() else selected.parent
+        ancestor = directory
+        owner_found = False
+        while ancestor.is_relative_to(root):
+            if (ancestor/'recreation.json').is_file():
+                found.add(str(ancestor))
+                owner_found = True
+                break
+            if ancestor == root:
+                break
+            ancestor = ancestor.parent
+        if owner_found or not selected.is_dir():
+            continue
+        def unreadable(exc):
+            errors.append(str(exc.filename) + '：目录无法读取，未纳入清理')
+        for current, dirs, files in os.walk(selected, followlinks=False, onerror=unreadable):
+            path = Path(current)
+            dirs[:] = [name for name in dirs if (path/name).resolve() == path/name
+                       and not (path/name).is_symlink()]
+            if 'recreation.json' in files:
+                found.add(str(path))
+                dirs[:] = []
+    return found
+
+
 def plan_selection(root, folders, paths):
     """Plan only owned media under selected files/directories, never arbitrary files.
 
@@ -84,7 +113,9 @@ def plan_selection(root, folders, paths):
     plan = {'scope': 'managed', 'root': str(root), 'selections': [str(x) for x in selections],
             'batches': [], 'protected': 0, 'errors': [], 'files': 0, 'bytes': 0}
     seen = set()
-    for folder in dict.fromkeys(str(Path(x).resolve()) for x in folders):
+    candidates = dict.fromkeys(str(Path(x).resolve()) for x in folders)
+    candidates.update(dict.fromkeys(sorted(_discover_selected_batches(root, selections, plan['errors']))))
+    for folder in candidates:
         batch_path = Path(folder)
         if not batch_path.is_relative_to(root) or not any(
                 batch_path.is_relative_to(x) or x.is_relative_to(batch_path) for x in selections):

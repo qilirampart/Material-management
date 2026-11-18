@@ -131,7 +131,8 @@ def cleanup_smoke(source, product, evidence_root):
         output = healthy.folder/'加工成品'/'run'/'video.mp4'; output.parent.mkdir(parents=True)
         shutil.copyfile(product, output)
         healthy.add_outputs([{'path': str(output), 'drama': '可用批次', 'mode': 'micro', 'metadata': {}}])
-        result = execute_cleanup(plan_selection(root, [healthy.folder], [output]), workspace)
+        # Historical files must work even without the folder in the recent list.
+        result = execute_cleanup(plan_selection(root, [], [output]), workspace)
         if result['errors'] or output.exists() or not raw.is_file():
             raise ValueError('Product cleanup did not preserve original video')
         result = execute_cleanup(plan_selection(root, [healthy.folder], [raw]), workspace)

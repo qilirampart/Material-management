@@ -52,7 +52,7 @@ class CleanupPage(QWidget):
         split.addWidget(self.preview)
         split.setStretchFactor(0, 3); split.setStretchFactor(1, 1)
         body.addWidget(split, 1)
-        body.addWidget(label('批次记录、配置、外部导入原文件和未登记文件仅展示，不删除。文件夹本身保留。'))
+        body.addWidget(label('历史批次无需加入当前列表。批次记录、配置、外部原文件及无法确认归属的文件受保护；文件夹保留。'))
         self.status = label('请选择要清理的文件或文件夹')
         body.addWidget(self.status)
         actions = QHBoxLayout()
@@ -71,6 +71,7 @@ class CleanupPage(QWidget):
 
     def invalidate(self):
         self.plan = None
+        self.preview.clear()
         self.delete_button.setEnabled(False)
         count = len(self.tree.selectionModel().selectedRows())
         self.status.setText(f'已选 {count} 项 · 请预览实际可删除的文件')

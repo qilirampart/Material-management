@@ -74,3 +74,34 @@ class SelectionCleanupTests(unittest.TestCase):
             w.queue[0]['identities'].append(second)
             execute_cleanup(plan_selection(root,w.folders,[raw]),w)
             self.assertEqual(w.queue,[{'folder':str(b.folder),'identities':[second]}])
+
+    def test_unindexed_historical_file_is_recognized_without_registering_workspace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); w,b,raw,out,cover=self.fixture(root)
+            w.folders=[]
+            plan=plan_selection(root,w.folders,[raw])
+            self.assertEqual(plan['files'],1)
+            self.assertEqual(w.folders,[])
+            execute_cleanup(plan,w)
+            self.assertFalse(raw.exists()); self.assertTrue(out.exists())
+
+    def test_parent_directory_discovers_multiple_historical_batches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); w,b,raw,out,cover=self.fixture(root)
+            other=w.create('4200-another')[0]
+            other.record_page(other.state['dramas'][0],[{'id':'9','name':'another'}],1)
+            item=other.state['sources'][0]
+            video=other.download_target(item); video.parent.mkdir(parents=True); video.write_bytes(b'other')
+            item.update(path=str(video.resolve()),download_status='downloaded');other.save()
+            plan=plan_selection(root,[],[root/'素材再创作'])
+            self.assertEqual(plan['files'],4)
+            self.assertEqual(len(plan['batches']),2)
+
+    def test_unknown_video_without_batch_record_is_still_protected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); video=root/'unknown.mp4'; video.write_bytes(b'user file')
+            w=fixtures.RecreationWorkspace(root/'prefs.json',root)
+            plan=plan_selection(root,[],[video])
+            self.assertEqual(plan['files'],0)
+            execute_cleanup(plan,w)
+            self.assertTrue(video.exists())

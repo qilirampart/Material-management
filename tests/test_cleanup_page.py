@@ -62,3 +62,22 @@ class CleanupPageTests(unittest.TestCase):
             self.assertEqual(cleanup.root, (Path(folder)/'new').resolve())
             self.assertIsNone(cleanup.plan)
             page.close(); page.deleteLater(); self.app.processEvents()
+
+    def test_historical_file_not_in_current_list_can_be_previewed_and_stale_preview_clears(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); w,b,raw,out,cover=fixtures.CleanupTests().fixture(root)
+            page=RecreationWorkflowPage({'output_root':folder,
+                'recreation_preferences_path':str(root/'empty-index.json')},restore=False)
+            self.assertEqual(page.workspace.folders,[])
+            cleanup=page.file_cleanup
+            index=cleanup.model.index(str(raw))
+            self.wait(lambda:index.isValid())
+            cleanup.tree.selectionModel().select(index,QItemSelectionModel.ClearAndSelect|QItemSelectionModel.Rows)
+            cleanup.prepare(); self.wait(lambda:not page.work_in_progress())
+            self.assertEqual(cleanup.plan['files'],1)
+            self.assertTrue(cleanup.delete_button.isEnabled())
+            cleanup.tree.clearSelection()
+            self.assertIsNone(cleanup.plan)
+            self.assertEqual(cleanup.preview.toPlainText(),'')
+            self.assertFalse(cleanup.delete_button.isEnabled())
+            page.close(); page.deleteLater(); self.app.processEvents()
