@@ -1,4 +1,4 @@
-"""Five-stage recreation UI. Reuses the established batch and platform engines."""
+"""Six-stage recreation UI. Reuses the established batch and platform engines."""
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
     QComboBox, QTableWidgetItem, QMessageBox, QFormLayout)
 from src.recreation_page import RecreationPage
 from src.recreation_workspace import RecreationWorkspace
+from src.recreation_cleanup_page import CleanupPage
 from src.recreation_processing import ProcessingWorkbench
 from src.recreation import RecreationBatch
 from src.recovery_dialog import RecoveryDialog
@@ -144,6 +145,8 @@ class RecreationWorkflowPage(RecreationPage):
         self.platform.fill_button.hide()
         self.platform.configure_button.setText('配置编导与上传人')
         self.tabs.addTab(upload, '05  自动上传')
+        self.file_cleanup = CleanupPage(self)
+        self.tabs.addTab(self.file_cleanup, '06  文件清理')
         # Kept as the base controller's compatibility selector; the new upload
         # catalog is cross-batch and does not display this old single-drama UI.
         self.upload_drama.setParent(self)
@@ -152,7 +155,7 @@ class RecreationWorkflowPage(RecreationPage):
         self.tabs.setStyleSheet('QTabWidget::pane { border:0; }')
         navigation = QHBoxLayout()
         self.step_buttons = []
-        for i, text in enumerate(('01  登录点众智投', '02  视频下载', '03  改 MD5', '04  微创新', '05  自动上传')):
+        for i, text in enumerate(('01  登录点众智投', '02  视频下载', '03  改 MD5', '04  微创新', '05  自动上传', '06  文件清理')):
             control = btn(text, lambda checked=False, index=i: self.tabs.setCurrentIndex(index))
             control.setCheckable(True)
             control.setStyleSheet('QPushButton { text-align:left; padding:12px; }'
@@ -161,6 +164,8 @@ class RecreationWorkflowPage(RecreationPage):
             navigation.addWidget(control, 1)
         self.layout().insertLayout(2, navigation)
         self.tabs.currentChanged.connect(lambda current: [b.setChecked(i == current) for i, b in enumerate(self.step_buttons)])
+        self.tabs.currentChanged.connect(lambda current: self.file_cleanup.refresh()
+            if current == 5 and not self.work_in_progress() else None)
         old_outputs.deleteLater()
         self.output_filter.currentIndexChanged.connect(self.refresh_outputs)
         self.batch_list.currentRowChanged.connect(self.select_batch)
@@ -217,6 +222,7 @@ class RecreationWorkflowPage(RecreationPage):
         self.workspace.root = self.output_root
         self.platform.config = dict(config)
         self.platform.address.setText(config.get('platform_url') or 'https://market.wuread.cn/market-admin/')
+        self.file_cleanup.refresh()
 
     def restore_last_batch(self):
         folder = self.workspace.last_batch
@@ -436,6 +442,7 @@ class RecreationWorkflowPage(RecreationPage):
         from src.recreation_cleanup import execute_cleanup
         self.cleanup_busy = True
         self.cleanup_button.setEnabled(False)
+        self.file_cleanup.set_busy(True)
         self.message.setText('正在清理勾选批次，请等待文件和记录同步完成…')
         def execute():
             if action == 'forget':
@@ -458,19 +465,28 @@ class RecreationWorkflowPage(RecreationPage):
             # Any pending upload plan was built from pre-cleanup paths.
             self.upload_groups = []; self.current_upload = None
             self.next_upload_button.setEnabled(False)
+            self.platform.set_materials([], {}, {}, set(), None)
+            self.upload_status.setText('清理已同步；需要上传时请重新勾选成品。平台中的未提交表单未改动。')
             summary = ('批次已移出，未删除文件。' if result.get('forgotten') else
                 f"清理完成：删除 {result['deleted']} 个文件，同步 {result['missing']} 个已缺失文件；"
                 f"保护 {result['protected']} 条外部文件记录。")
             self.message.setText(summary + (f" {len(result['errors'])} 项未完成，请查看详情。" if result['errors'] else ''))
+            self.file_cleanup.refresh()
+            self.file_cleanup.status.setText(self.message.text())
             if result['errors']:
                 QMessageBox.warning(self, '清理未全部完成', summary + '\n\n' + '\n'.join(result['errors'][:12]))
         def finished():
             self.cleanup_busy = False
             self.cleanup_button.setEnabled(True)
+            self.file_cleanup.set_busy(False)
             self.task_finished.emit()
         self.cleanup_task = Background(execute, self)
         self.cleanup_task.result.connect(completed)
-        self.cleanup_task.failed.connect(lambda msg: self.message.setText('清理未完成：' + msg))
+        def failed(msg):
+            self.message.setText('清理未完成：' + msg)
+            self.file_cleanup.refresh()
+            self.file_cleanup.status.setText(self.message.text())
+        self.cleanup_task.failed.connect(failed)
         self.cleanup_task.finished.connect(finished)
         self.cleanup_task.start()
 

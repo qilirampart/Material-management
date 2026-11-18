@@ -25,6 +25,12 @@ def smoke(output):
                 window.navigation.setCurrentRow(i)
                 app.processEvents()
                 window.grab().save(str(folder / (name + ".png")))
+            if window.recreation.tabs.tabText(5) != '06  文件清理':
+                raise ValueError('Cleanup workflow page is missing')
+            window.recreation.tabs.setCurrentIndex(5)
+            app.processEvents()
+            window.grab().save(str(folder/'file-cleanup.png'))
+            result['cleanup_page'] = True
             # Load a local page in the real embedded browser. No external site or login.
             from PySide6.QtWebEngineWidgets import QWebEngineView
             browser = QWebEngineView(window)
@@ -107,7 +113,7 @@ def cleanup_smoke(source, product, evidence_root):
     import tempfile
     from src.recreation import RecreationBatch
     from src.recreation_workspace import RecreationWorkspace
-    from src.recreation_cleanup import plan_cleanup, execute_cleanup
+    from src.recreation_cleanup import plan_selection, execute_cleanup
     with tempfile.TemporaryDirectory(prefix='cleanup-smoke-', dir=evidence_root) as temp:
         root = Path(temp)
         workspace = RecreationWorkspace(root/'workspace.json', root)
@@ -125,10 +131,10 @@ def cleanup_smoke(source, product, evidence_root):
         output = healthy.folder/'加工成品'/'run'/'video.mp4'; output.parent.mkdir(parents=True)
         shutil.copyfile(product, output)
         healthy.add_outputs([{'path': str(output), 'drama': '可用批次', 'mode': 'micro', 'metadata': {}}])
-        result = execute_cleanup(plan_cleanup([healthy.folder], 'products'), workspace)
+        result = execute_cleanup(plan_selection(root, [healthy.folder], [output]), workspace)
         if result['errors'] or output.exists() or not raw.is_file():
             raise ValueError('Product cleanup did not preserve original video')
-        result = execute_cleanup(plan_cleanup([healthy.folder], 'originals'), workspace)
+        result = execute_cleanup(plan_selection(root, [healthy.folder], [raw]), workspace)
         if result['errors'] or raw.exists() or workspace.resolve_inputs('md5'):
             raise ValueError('Original cleanup did not sync processing input')
         return {'ok': True, 'missing_batch_isolated': True, 'media_and_records_synced': True}

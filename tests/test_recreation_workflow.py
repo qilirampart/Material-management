@@ -121,10 +121,10 @@ class WorkflowTests(unittest.TestCase):
     def page(self, folder):
         return RecreationWorkflowPage({'output_root': folder, 'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=False)
 
-    def test_five_stages_share_one_platform_component_and_separate_batches(self):
+    def test_six_stages_share_one_platform_component_and_separate_batches(self):
         with tempfile.TemporaryDirectory() as folder:
             page = self.page(folder)
-            self.assertEqual(page.tabs.count(), 5)
+            self.assertEqual(page.tabs.count(), 6)
             page.drama_input.setPlainText('4100-第一剧\n4200-第二剧')
             page.create_batch()
             self.assertEqual(page.batch_list.count(), 2)
