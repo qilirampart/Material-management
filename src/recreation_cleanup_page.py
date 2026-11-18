@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QDir, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeView,
-    QAbstractItemView, QPlainTextEdit, QMessageBox, QSplitter, QFileSystemModel)
+    QAbstractItemView, QPlainTextEdit, QMessageBox, QSplitter, QFileSystemModel, QStackedWidget)
 from src.ui_design import card, label, btn, Background
 from src.recreation_cleanup import plan_selection
 
@@ -48,7 +48,12 @@ class CleanupPage(QWidget):
         self.tree.setStyleSheet('QTreeView {background:white; border:1px solid #DCE5E7; '
             'alternate-background-color:#FAFCFC; selection-background-color:#E6F3F0; '
             'selection-color:#143F3B;} QTreeView::item { min-height:28px; }')
-        split.addWidget(self.tree)
+        self.file_browser = QStackedWidget()
+        self.file_browser.addWidget(self.tree)
+        self.missing_directory = label('素材保存目录不存在\n点击“打开素材目录”创建并打开，或在设置中选择已有素材目录。')
+        self.missing_directory.setAlignment(Qt.AlignCenter)
+        self.file_browser.addWidget(self.missing_directory)
+        split.addWidget(self.file_browser)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setPlaceholderText('选择范围后，点击“预览待删除文件”，这里会显示实际要删除的文件。')
@@ -72,13 +77,28 @@ class CleanupPage(QWidget):
         self.refresh()
 
     def open_root(self):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.root)))
+        self.root = Path(self.owner.output_root).resolve()
+        if not self.root.is_dir():
+            if QMessageBox.question(self, '素材目录不存在',
+                    f'当前素材保存目录不存在：\n{self.root}\n\n是否创建并打开？\n'
+                    '如果素材保存在其他位置，请在设置中修改素材保存目录。',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            try:
+                self.root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                QMessageBox.warning(self, '无法创建素材目录', f'{self.root}\n\n{exc}')
+                return
+            self.refresh()
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.root))):
+            QMessageBox.warning(self, '无法打开素材目录', f'系统未能打开以下目录，可复制路径手动打开：\n{self.root}')
 
     def invalidate(self):
         self.plan = None
         self.preview.clear()
         self.delete_button.setEnabled(False)
-        count = len(self.tree.selectionModel().selectedRows())
+        selection = self.tree.selectionModel()
+        count = len(selection.selectedRows()) if selection else 0
         self.status.setText(f'已选 {count} 项 · 下一步：点击“预览待删除文件”')
 
     def refresh(self):
@@ -89,27 +109,37 @@ class CleanupPage(QWidget):
         self.model.setReadOnly(True)
         self.model.setOption(QFileSystemModel.DontWatchForChanges, True)
         self.model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot | QDir.Hidden)
-        self.model.setRootPath(str(self.root))
-        self.tree.setModel(self.model)
-        self.tree.setRootIndex(self.model.index(str(self.root)))
-        self.tree.setColumnWidth(0, 500)
-        self.tree.setColumnWidth(1, 110)
-        self.tree.setColumnWidth(2, 150)
-        self.tree.selectionModel().selectionChanged.connect(self.invalidate)
+        exists = self.root.is_dir()
+        if exists:
+            self.model.setRootPath(str(self.root))
+            self.tree.setModel(self.model)
+            self.tree.setRootIndex(self.model.index(str(self.root)))
+            self.tree.setColumnWidth(0, 500)
+            self.tree.setColumnWidth(1, 110)
+            self.tree.setColumnWidth(2, 150)
+            self.tree.selectionModel().selectionChanged.connect(self.invalidate)
+        else:
+            # An invalid QModelIndex would expose the computer's drives instead.
+            self.tree.setModel(None)
+        self.file_browser.setCurrentWidget(self.tree if exists else self.missing_directory)
+        self.preview_button.setEnabled(exists)
         if old is not None:
             old.deleteLater()
         self.preview.clear()
         self.invalidate()
-        if not self.root.is_dir():
-            self.status.setText('素材保存目录尚不存在；创建或下载批次后刷新即可')
+        if not exists:
+            self.status.setText('素材目录不存在；点击“打开素材目录”可创建，或在设置中更换保存目录。')
 
     def set_busy(self, busy):
         self.tree.setEnabled(not busy)
         self.refresh_button.setEnabled(not busy)
-        self.preview_button.setEnabled(not busy)
+        self.preview_button.setEnabled(not busy and self.root.is_dir())
         self.delete_button.setEnabled(not busy and bool(self.plan and self.plan['batches']))
 
     def prepare(self):
+        if not self.root.is_dir() or self.tree.selectionModel() is None:
+            self.refresh()
+            return
         if self.owner.work_in_progress():
             self.status.setText('请先完成或停止当前任务，再预览清理')
             return

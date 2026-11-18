@@ -94,3 +94,32 @@ class CleanupPageTests(unittest.TestCase):
                 self.assertIn(text,cleanup.safety_notice.text())
             self.assertEqual(cleanup.preview_button.text(),'预览待删除文件')
             page.close();page.deleteLater();self.app.processEvents()
+
+    def test_missing_directory_is_not_a_drive_browser_and_can_be_created_after_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'not-created'/'materials'
+            page=RecreationWorkflowPage({'output_root':str(root),
+                'recreation_preferences_path':str(Path(folder)/'prefs.json')},restore=False)
+            cleanup=page.file_cleanup
+            self.assertIsNone(cleanup.tree.model())
+            self.assertFalse(cleanup.preview_button.isEnabled())
+            with patch('src.recreation_cleanup_page.QMessageBox.question',return_value=QMessageBox.No), \
+                    patch('src.recreation_cleanup_page.QDesktopServices.openUrl') as opener:
+                cleanup.open_root();opener.assert_not_called()
+            self.assertFalse(root.exists())
+            with patch('src.recreation_cleanup_page.QMessageBox.question',return_value=QMessageBox.Yes), \
+                    patch('src.recreation_cleanup_page.QDesktopServices.openUrl',return_value=True) as opener:
+                cleanup.open_root();opener.assert_called_once()
+            self.assertTrue(root.is_dir())
+            self.assertIsNotNone(cleanup.tree.model())
+            self.assertEqual(Path(cleanup.model.filePath(cleanup.tree.rootIndex())),root.resolve())
+            page.close();page.deleteLater();self.app.processEvents()
+
+    def test_open_directory_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page=RecreationWorkflowPage({'output_root':folder,
+                'recreation_preferences_path':str(Path(folder)/'prefs.json')},restore=False)
+            with patch('src.recreation_cleanup_page.QDesktopServices.openUrl',return_value=False), \
+                    patch('src.recreation_cleanup_page.QMessageBox.warning') as warning:
+                page.file_cleanup.open_root();warning.assert_called_once()
+            page.close();page.deleteLater();self.app.processEvents()

@@ -14,7 +14,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.5.5
+        default: 0.5.6
         type: string
 
 permissions:
@@ -112,6 +112,25 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
           $result = Get-Content -LiteralPath "$root/evidence/result.json" -Raw -Encoding utf8 | ConvertFrom-Json
           if (-not $result.ok) { throw 'Packaged browser/processing/playback validation failed' }
+      - name: Verify installed upgrade and user data preservation
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DUpgradeTestBuild "/DAppVersion=${env:RELEASE_VERSION}" /DPackageOutputDir=output/upgrade-installer /DSetupBaseName=UpgradeAcceptance installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade acceptance installer compilation failed' }
+          python scripts/verify_windows_upgrade.py --installer output/upgrade-installer/UpgradeAcceptance.exe --evidence output/upgrade-evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Installed upgrade validation failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-installed-upgrade-evidence
+          path: |
+            output/upgrade-evidence/*.json
+            output/upgrade-evidence/*.png
+            output/upgrade-evidence/*.log
+          if-no-files-found: ignore
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         if: always()
         with:
