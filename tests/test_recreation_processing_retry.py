@@ -36,6 +36,12 @@ class ProcessingRetryTests(unittest.TestCase):
         page.set_checked(page.md5.table, 'all')
         return page, batch, good, bad
 
+    @staticmethod
+    def aliased_root(folder):
+        alias = Path(folder)/'alias'
+        alias.mkdir()
+        return alias/'..'
+
     def wait(self, panel):
         until = time.monotonic()+10
         while panel.busy and time.monotonic()<until:
@@ -45,7 +51,7 @@ class ProcessingRetryTests(unittest.TestCase):
 
     def test_failed_middle_item_is_the_only_input_retried(self):
         with tempfile.TemporaryDirectory() as folder:
-            page, batch, good, bad = self.fixture(Path(folder))
+            page, batch, good, bad = self.fixture(self.aliased_root(folder))
             panel = page.md5
             panel.start()
             self.wait(panel)
@@ -62,18 +68,18 @@ class ProcessingRetryTests(unittest.TestCase):
             self.wait(panel)
             outputs = RecreationBatch.load(batch.folder).state['outputs']
             self.assertEqual(len(outputs), 3)
-            self.assertEqual([x['version'] for x in outputs if Path(x['source_path']) == bad], [1])
+            self.assertEqual([x['version'] for x in outputs if Path(x['source_path']).resolve() == bad.resolve()], [1])
             self.assertEqual(panel.failures, [])
             self.assertFalse(panel.retry_button.isEnabled())
             page.close()
 
     def test_outputs_with_record_save_failure_are_not_retried(self):
         with tempfile.TemporaryDirectory() as folder:
-            page, batch, good, bad = self.fixture(Path(folder))
+            page, batch, good, bad = self.fixture(self.aliased_root(folder))
             panel = page.md5
             for row in range(panel.table.rowCount()):
                 panel.table.item(row, 0).setCheckState(
-                    Qt.Checked if panel.items[row]['path'] == str(good) else Qt.Unchecked)
+                    Qt.Checked if Path(panel.items[row]['path']).resolve() == good.resolve() else Qt.Unchecked)
             with patch.object(RecreationBatch, 'add_outputs', side_effect=OSError('write failed')):
                 panel.start()
                 self.wait(panel)
