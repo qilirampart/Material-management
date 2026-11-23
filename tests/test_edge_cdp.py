@@ -201,6 +201,26 @@ class EdgeCdpTests(unittest.TestCase):
         self.assertEqual(result["video_preview_count"], 1)
         sleep.assert_called_once()
 
+    @patch("src.edge_cdp.FILE_PREVIEW_WAIT_ATTEMPTS", 1)
+    @patch("src.edge_cdp.time.sleep")
+    @patch("src.edge_cdp.websocket.create_connection")
+    def test_extends_preview_wait_only_when_video_previews_advance(self, connect, sleep):
+        socket = MagicMock()
+        socket.recv.side_effect = [
+            json.dumps({"id": 1, "result": {"result": {"objectId": "input-1"}}}),
+            json.dumps({"id": 2, "result": {}}),
+            *(json.dumps({"id": 3+i, "result": {"result": {"value": {
+                "inputCount": 2, "pluginCount": 2, "previewCount": i,
+                "videoPreviewCount": i, "names": ["a.mp4", "b.mp4"],
+            }}}}) for i in range(3)),
+        ]
+        connect.return_value = socket
+        result = set_edge_file_input("ws://page", "document.querySelector('input')", ["a.mp4", "b.mp4"])
+        self.assertEqual(result["video_preview_count"], 2)
+        self.assertEqual(sleep.call_count, 2)
+        methods = [json.loads(call.args[0])["method"] for call in socket.send.call_args_list]
+        self.assertEqual(methods.count("DOM.setFileInputFiles"), 1)
+
     @patch("src.edge_cdp.edge_targets", return_value=[{"id": "old"}, {"id": "new"}])
     def test_target_snapshot_contains_ids(self, _targets):
         self.assertEqual(edge_target_ids(), {"old", "new"})

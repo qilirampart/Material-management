@@ -6,7 +6,7 @@ from pathlib import Path
 from dataclasses import asdict
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QLineEdit,
-    QSpinBox, QScrollArea,QComboBox,
+    QSpinBox, QScrollArea,QComboBox, QDialog, QPlainTextEdit, QDialogButtonBox,
     QProgressBar, QTableWidgetItem)
 from src.ui_design import card, label, btn, Background
 from src.desktop_widgets import local_open
@@ -29,6 +29,10 @@ class ProcessingWorkbench(QWidget):
         self.items, self.last_output = [], ''
         self.preview_cache, self.preview_dialog = None, None
         self.preview_plan = None
+        self.failures = []
+        self.retry_options = None
+        self.retry_plans = {}
+        self.last_stop_reason = ''
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         main, box = card('视频列表')
@@ -46,6 +50,12 @@ class ProcessingWorkbench(QWidget):
         actions = QHBoxLayout()
         self.remove_button = btn('移出列表', self.remove_selected)
         actions.addWidget(self.remove_button)
+        self.failure_button = btn('失败明细…', self.show_failures)
+        self.retry_button = btn('仅重试失败项', lambda: self.start(retry=True))
+        self.failure_button.setEnabled(False)
+        self.retry_button.setEnabled(False)
+        actions.addWidget(self.failure_button)
+        actions.addWidget(self.retry_button)
         self.preview_button = btn('播放最近成品', lambda: local_open(self.last_output))
         self.preview_button.setEnabled(False)
         actions.addWidget(self.preview_button)
@@ -149,6 +159,9 @@ class ProcessingWorkbench(QWidget):
     def _refresh_rows(self, checked):
         self.table.setRowCount(len(self.items))
         completed = {}
+        recent_failures = defaultdict(list)
+        for entry in self.failures:
+            recent_failures[self.failure_key(entry)[:2]].append(entry)
         for row, item in enumerate(self.items):
             identity = item['batch_folder'] + '|' + item['video_id']
             self.table.setItem(row, 0, self.owner._check_item(identity, checked))
@@ -165,9 +178,16 @@ class ProcessingWorkbench(QWidget):
                     status = '批次记录已变化，请刷新后重试'
             if available and item['video_id'] in completed[folder]:
                 status = '已完成（可再次生成）'
+            failures = recent_failures[(folder, item['video_id'])]
+            if failures:
+                if any(not entry['retryable'] for entry in failures):
+                    status = '需要核对 · 查看明细'
+                else:
+                    status = f"{len(failures)} 版失败 · {failures[0]['stage']}"
             for col, value in enumerate((item['name'], Path(item['batch_folder']).name + ' · ' + item['drama'], status), 1):
                 cell = QTableWidgetItem(value)
-                cell.setToolTip(value)
+                cell.setToolTip('\n'.join(f"第 {entry['version']} 版：{entry['error']}" for entry in failures)
+                                 if col == 3 and failures else value)
                 self.table.setItem(row, col, cell)
 
     def options(self, sample):
@@ -182,16 +202,56 @@ class ProcessingWorkbench(QWidget):
             raise ValueError('请先导入一条本地可用视频，再打开原片框选')
         return self.items[index]['path']
 
-    def start(self, checked=False, *, sample=False, preview=False):
+    @staticmethod
+    def failure_key(entry):
+        return (entry['batch_folder'], entry['video_id'], entry.get('version'))
+
+    def show_failures(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('本轮加工明细')
+        dialog.resize(760, 460)
+        layout = QVBoxLayout(dialog)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines = []
+        if self.last_stop_reason:
+            lines.append(f'停止原因：{self.last_stop_reason}\n')
+        for entry in self.failures:
+            version = f" · 第 {entry['version']} 版" if entry.get('version') else ''
+            retry = '可重试' if entry['retryable'] else '需先检查或恢复记录'
+            lines.append(f"{entry['name']}{version} · {entry['stage']} · {retry}\n"
+                         f"{Path(entry['batch_folder']).name}\n{entry['error']}")
+            if entry.get('manifest'):
+                lines.append(f"加工记录：{entry['manifest']}")
+            lines.append('')
+        details.setPlainText('\n'.join(lines))
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText('关闭')
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def start(self, checked=False, *, sample=False, preview=False, retry=False):
         if self.owner.work_in_progress():
             self.status.setText('请先完成当前任务')
             return
-        items = [self.items[i] for i in self.owner.checked_rows(self.table)]
+        retry_versions = defaultdict(lambda: defaultdict(list))
+        if retry:
+            for entry in self.failures:
+                if entry['retryable']:
+                    retry_versions[entry['batch_folder']][entry['video_id']].append(entry['version'])
+            items = [item for item in self.items if item['video_id'] in retry_versions.get(item['batch_folder'], {})]
+        else:
+            items = [self.items[i] for i in self.owner.checked_rows(self.table)]
         try:
-            options = self.options(sample or preview)
+            options = self.retry_options if retry else self.options(sample or preview)
+            if retry and (not options or not items):
+                raise ValueError('没有可重试的失败项；请确认原片仍在处理列表')
             if not preview and not options.uploader:
                 raise ValueError('请填写上传人缩写')
-            if not items or any(not x.get('path') or not Path(x['path']).is_file() for x in items):
+            if not items or ((sample or preview) and not Path(items[0].get('path') or '.').is_file()):
                 raise ValueError('请勾选本地可用的视频；缺失文件需重新下载')
         except ValueError as exc:
             self.status.setText(str(exc))
@@ -199,7 +259,9 @@ class ProcessingWorkbench(QWidget):
         if sample or preview:
             items = items[:1]
         frozen_plans={}
-        if self.preview_plan and not preview and self.mode=='micro':
+        if retry:
+            frozen_plans = dict(self.retry_plans)
+        elif self.preview_plan and not preview and self.mode=='micro':
             def effects(values):
                 return {k:v for k,v in values.items() if k not in {'uploader','variants'}}
             if effects(asdict(options))==effects(self.preview_plan['requested_options']):
@@ -216,6 +278,9 @@ class ProcessingWorkbench(QWidget):
             preview_start, preview_seconds = self.preview_start.value(), self.preview_length.value()
             preview_section=self.preview_section.currentData()
         self.stop_event.clear()
+        if not preview and not retry:
+            self.retry_options, self.retry_plans = options, frozen_plans
+            self.failures, self.last_stop_reason = [], ''
         task = None
         def execute():
             if preview:
@@ -234,48 +299,82 @@ class ProcessingWorkbench(QWidget):
             groups = defaultdict(list)
             for item in items:
                 groups[item['batch_folder']].append(item)
-            outputs, failed = [], []
+            outputs, failed, completed = [], [], set()
             stopped, stop_reason = False, ''
             for folder, sources in groups.items():
                 if self.stop_event.is_set():
                     break
+                by_id = {x['video_id']: x for x in sources}
+                versions = retry_versions[folder] if retry else {}
+                def folder_failures(stage, message, *, retryable, manifest=''):
+                    return [{'batch_folder': folder, 'video_id': x['video_id'], 'name': x['name'],
+                             'version': version, 'stage': stage, 'error': message,
+                             'retryable': retryable, 'manifest': manifest}
+                            for x in sources
+                            for version in (versions[x['video_id']] if retry else range(1, options.variants + 1))]
                 try:
                     # Recheck the batch at execution time, not just import time.
                     RecreationBatch.load(folder, recover_interrupted=False)
                 except (OSError, ValueError):
-                    failed.extend({'video_id': x['video_id'], 'error': '来源批次记录不可用，已跳过此批次'} for x in sources)
+                    failed.extend(folder_failures('读取批次', '来源批次记录不可用，已跳过此批次', retryable=True))
                     continue
-                result = generate_variants(sources, Path(folder) / '加工成品', options,
-                    progress=task.progress.emit, should_stop=self.stop_event.is_set,resolved_plans=frozen_plans)
                 try:
-                    batch = RecreationBatch.load(folder, recover_interrupted=False)
-                    batch.add_outputs(result['outputs'])
+                    result = generate_variants(sources, Path(folder) / '加工成品', options,
+                        progress=task.progress.emit, should_stop=self.stop_event.is_set, resolved_plans=frozen_plans,
+                        **({'versions_by_id': versions} if retry else {}))
+                except OSError:
+                    failed.extend(folder_failures('写入加工目录', '无法写入文件或加工记录；请先检查权限及可能已生成的成品',
+                        retryable=False, manifest=str(Path(folder) / '加工成品')))
+                    continue
+                failed.extend({**entry, 'batch_folder': folder, 'name': by_id[entry['video_id']]['name'],
+                               'retryable': entry.get('retryable', True),
+                               'stage': entry.get('stage', '处理视频'), 'manifest': result.get('manifest', '')}
+                              for entry in result['failed'])
+                try:
+                    if result['outputs']:
+                        batch = RecreationBatch.load(folder, recover_interrupted=False)
+                        batch.add_outputs(result['outputs'])
                 except (OSError, ValueError):
-                    failed.extend({'video_id': x['video_id'], 'error': '成品已保留，但批次记录未保存；请从加工记录恢复'} for x in sources)
-                    failed.extend(result['failed'])
+                    failed.extend({'batch_folder': folder, 'video_id': x['source_video_id'],
+                                   'name': by_id[x['source_video_id']]['name'], 'version': x['version'],
+                                   'stage': '保存批次', 'error': '成品已保留；请在上传页使用“找回加工成品”恢复记录',
+                                   'retryable': False, 'manifest': result.get('manifest', '')} for x in result['outputs'])
                     if result['stopped']:
                         stopped, stop_reason = True, result.get('stop_reason', '')
                         break
                     continue
                 outputs.extend(result['outputs'])
-                failed.extend(result['failed'])
+                completed.update((folder, x['source_video_id'], x['version']) for x in result['outputs'])
                 if result['stopped']:
                     stopped, stop_reason = True, result.get('stop_reason', '')
                     break
-            return {'outputs': outputs, 'failed': failed, 'stopped': stopped or self.stop_event.is_set(), 'stop_reason':stop_reason}
+            return {'outputs': outputs, 'failed': failed, 'completed_keys': completed, 'retry': retry,
+                    'stopped': stopped or self.stop_event.is_set(), 'stop_reason': stop_reason}
         task = Background(execute, self)
         self.task, self.busy = task, True
         task.progress.connect(self.show_progress)
         task.result.connect(self.show_result)
-        task.failed.connect(self.status.setText)
+        if preview:
+            task.failed.connect(self.status.setText)
+        else:
+            task.failed.connect(self.processing_interrupted)
         task.finished.connect(self.finish)
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
                         self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(False)
         if self.mode=='micro':self.preview_section.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.failure_button.setEnabled(False)
+        self.retry_button.setEnabled(False)
         self.bar.setRange(0, 0)
         task.start()
+
+    def processing_interrupted(self, message):
+        # An unexpected interruption gives no trustworthy per-file result. Avoid
+        # retrying previously failed entries that this attempt may have completed.
+        self.failures = [{**entry, 'retryable': False} for entry in self.failures]
+        self.last_stop_reason = message + ' 请先检查已生成的成品及加工记录，再决定是否重跑。'
+        self.status.setText('本轮中断，结果需核对；请查看失败明细。')
 
     def show_progress(self, event):
         if event['phase'] == 'budget_scan':
@@ -302,8 +401,16 @@ class ProcessingWorkbench(QWidget):
             self.preview_dialog.show()
             self.preview_dialog.player.play()
             return
-        self.status.setText(f"完成 {len(result['outputs'])} 个 · 失败 {len(result['failed'])} 个"
-                            + (' · ' + (result.get('stop_reason') or '已停止') if result['stopped'] else ' · 已保存到来源批次'))
+        recent = {self.failure_key(entry): entry for entry in result['failed']}
+        if result.get('retry'):
+            merged = {self.failure_key(entry): entry for entry in self.failures
+                      if self.failure_key(entry) not in result['completed_keys']}
+            merged.update(recent)
+            recent = merged
+        self.failures = list(recent.values())
+        self.last_stop_reason = (result.get('stop_reason') or '已停止') if result['stopped'] else ''
+        self.status.setText(f"已入库 {len(result['outputs'])} 个 · 待处理失败 {len(self.failures)} 个"
+                            + (' · ' + self.last_stop_reason if self.last_stop_reason else ''))
         if result['outputs']:
             self.last_output = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)
@@ -322,6 +429,10 @@ class ProcessingWorkbench(QWidget):
         self.bar.setRange(0, 1)
         self.bar.setValue(1)
         self.refresh()
+        self.failure_button.setEnabled(bool(self.failures or self.last_stop_reason))
+        sources = {(item['batch_folder'], item['video_id']) for item in self.items}
+        self.retry_button.setEnabled(any(entry['retryable'] and self.failure_key(entry)[:2] in sources
+                                         for entry in self.failures))
         self.finished.emit()
 
     def stop(self):

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from src.batch import save_json
 from src.desktop_widgets import PlatformPage, button, title, local_open
 from src.paths import APP_RUNTIME_ROOT
-from src.recreation import RecreationBatch, parse_dramas
+from src.recreation import RecreationBatch, RecreationStopped, parse_dramas
 from src.material_name_filter import normalize_exclude_name,name_is_excluded
 from src.task_input import local_files_to_rows
 from src.ui_design import card, label, Background
@@ -347,18 +347,31 @@ class RecreationPage(QWidget):
         self.collection_stop.clear()
         task = None
         def execute():
-            ws_url = find_page_ws_url(url, port, target_id=target_id)
-            client = PlatformMaterialClient(ws_url, should_stop=self.collection_stop.is_set,
-                                            on_wait=task.progress.emit)
-            client.ensure_ready()
-            batch = RecreationBatch.load(folder)
+            try:
+                batch = RecreationBatch.load(folder)
+            except (OSError, ValueError):
+                raise RecreationPlatformError('当前批次记录无法读取，请检查目录后重新打开批次') from None
+            try:
+                ws_url = find_page_ws_url(url, port, target_id=target_id)
+                client = PlatformMaterialClient(ws_url, should_stop=self.collection_stop.is_set,
+                                                on_wait=task.progress.emit)
+                client.ensure_ready()
+            except RecreationStopped:
+                return {'completed': 0, 'failed': 0, 'skipped': 0, 'stopped': True}
+            except (OSError, TimeoutError):
+                raise RecreationPlatformError('无法连接智投页面，请检查网络并确认已登录') from None
             common = {'progress': task.progress.emit, 'should_stop': self.collection_stop.is_set}
             try:
                 if operation == 'query':
                     return collect_platform_materials(batch, client, **kwargs, **common)
-                return download_platform_materials(batch, client, **kwargs, **common)
+                from src.recreation_schedule import DownloadHistory
+                history = DownloadHistory(self.preferences_path.parent)
+                return download_platform_materials(batch, client, **kwargs, **common,
+                    on_saved=lambda item: history.note(item['drama_id'], item['source_material_id']))
             except ValueError as exc:
                 raise RecreationPlatformError(str(exc)) from None
+            except OSError:
+                raise RecreationPlatformError('无法保存素材或批次记录，请检查磁盘空间及目录权限') from None
         task = Background(execute, self)
         self.collection_task = task
         task.progress.connect(self.show_collection_progress)
@@ -438,7 +451,9 @@ class RecreationPage(QWidget):
         else:
             message = f"完成 {result['completed']} 条 · 失败 {result['failed']} 条 · 跳过 {result['skipped']} 条"
         if result.get('excluded'):message+=f" · 名称排除 {result['excluded']} 条"
-        self.message.setText(message + (' · 已停止' if result.get('stopped') else ''))
+        reason = result.get('pause_reason')
+        self.message.setText(message + (f' · 已暂停：{reason}' if reason else
+                                        ' · 已停止' if result.get('stopped') else ''))
         return True
 
     def collection_failed(self, message):

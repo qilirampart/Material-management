@@ -22,7 +22,11 @@ class RecreationPlatformError(RuntimeError):
     user_safe = True
 
 
-class PlatformRateLimited(RecreationPlatformError):
+class DownloadQueueBlocked(RecreationPlatformError):
+    """Shared dependency failed; pause without consuming unrelated jobs."""
+
+
+class PlatformRateLimited(DownloadQueueBlocked):
     def __init__(self, seconds):
         super().__init__('平台请求频率受限，请稍后重试')
         self.seconds = max(5, min(120, int(seconds or 5)))
@@ -150,7 +154,7 @@ class PlatformMaterialClient:
             if result.get('status') == 'ready':
                 return
             if result.get('status') == 'login':
-                raise RecreationPlatformError('请回到“01 登录点众智投”重新登录后再查询')
+                raise DownloadQueueBlocked('智投登录已失效，请重新登录后重试')
             time.sleep(0.3)
         raise RecreationPlatformError('素材管理页面未加载完成，尚未查询剧目；请回到“01 登录点众智投”确认登录并打开素材管理后重试')
 
@@ -173,7 +177,7 @@ class PlatformMaterialClient:
         job = uuid.uuid4().hex
         result = evaluate_edge_page(self.ws_url, build_platform_job_script(job, operation, payload)) or {}
         if result.get('error'):
-            raise RecreationPlatformError(result['error'])
+            raise DownloadQueueBlocked(result['error'])
         deadline = time.monotonic() + 90
         try:
             while time.monotonic() < deadline:
@@ -185,10 +189,14 @@ class PlatformMaterialClient:
                     if data.get('error'):
                         if data.get('status') == 429:
                             raise PlatformRateLimited(data.get('retry_after'))
+                        if data.get('status') in (401, 403):
+                            raise DownloadQueueBlocked('智投返回登录或权限错误，请确认登录后继续')
+                        if data.get('status') in (0, 502, 503, 504):
+                            raise DownloadQueueBlocked('智投连接异常，请检查网络后继续')
                         raise RecreationPlatformError(data['error'])
                     return data
                 time.sleep(0.25)
-            raise RecreationPlatformError('平台查询超时，请重试；已读取结果保留')
+            raise DownloadQueueBlocked('平台请求超时，请检查网络后重试；已读取结果保留')
         finally:
             try:
                 evaluate_edge_page(self.ws_url, f'delete window.__dzRecreationJobs?.[{json.dumps(job)}]')
@@ -275,9 +283,10 @@ def download_material(url, partial, *, progress=None, should_stop=None):
         try:
             return _download_material_once(url, partial, progress=progress, should_stop=should_stop)
         except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError,
-                _RetryableDownloadError):
+                _RetryableDownloadError) as exc:
             if attempt == 2:
-                raise RecreationPlatformError('视频下载连接中断、超时或文件不完整，尝试 3 次后仍失败；已完成文件保留') from None
+                error = DownloadQueueBlocked if isinstance(exc, (requests.ConnectionError, requests.Timeout)) else RecreationPlatformError
+                raise error('视频下载连接中断、超时或文件不完整，尝试 3 次后仍失败；已完成文件保留') from None
             if progress:
                 progress({'retry': attempt + 1, 'bytes': 0, 'size': 0, 'speed': 0})
             deadline = time.monotonic() + 2 * (attempt + 1)
@@ -304,7 +313,7 @@ def _download_material_once(url, partial, *, progress=None, should_stop=None):
             raise RecreationPlatformError(f'原始视频下载失败（HTTP {response.status_code}），请重试')
         total = int(response.headers.get('content-length') or 0)
         if total and shutil.disk_usage(Path(partial).parent).free < total + 64 * 1024 * 1024:
-            raise RecreationPlatformError('磁盘空间不足，请更换保存目录或释放空间')
+            raise DownloadQueueBlocked('磁盘空间不足，请更换保存目录或释放空间')
         with Path(partial).open('wb') as stream:
             for chunk in response.iter_content(256 * 1024):
                 if should_stop and should_stop():
@@ -322,23 +331,29 @@ def _download_material_once(url, partial, *, progress=None, should_stop=None):
             raise _RetryableDownloadError()
 
 
-def download_platform_materials(batch, client, identities=None, *, transfer=None, progress=None, should_stop=None):
+def download_platform_materials(batch, client, identities=None, *, transfer=None, progress=None, should_stop=None,
+                                on_saved=None):
     transfer = transfer or download_material
     chosen = set(identities) if identities is not None else None
     items = [x for x in batch.state['sources'] if x.get('source_material_id')
              and (chosen is None or x['video_id'] in chosen)]
     exclude_name=normalize_exclude_name(batch.state.get('exclude_name',''))
     counts = {'completed': 0, 'failed': 0, 'skipped': 0, 'excluded':0,'stopped': False, 'folder': str(batch.folder)}
+    remaining = dict.fromkeys(x['video_id'] for x in items)
     for index, item in enumerate(items, 1):
         if should_stop and should_stop():
             counts['stopped'] = True
             break
         if name_is_excluded(item['name'],exclude_name):
             counts['excluded']+=1
+            remaining.pop(item['video_id'])
             if progress:progress({'phase':'excluded','video_id':item['video_id'],'index':index,'total':len(items),'drama':item['drama']})
             continue
         if item.get('path') and Path(item['path']).is_file() and item['download_status'] == 'downloaded':
+            if on_saved:
+                on_saved(item)
             counts['skipped'] += 1
+            remaining.pop(item['video_id'])
             continue
         event = {'video_id': item['video_id'], 'index': index, 'total': len(items), 'drama': item['drama']}
         try:
@@ -359,12 +374,15 @@ def download_platform_materials(batch, client, identities=None, *, transfer=None
                 batch.complete_download(item['video_id'], should_stop=should_stop)
             counts['completed'] += 1
             batch.save()
-            if progress:
-                progress({**event, 'phase': 'downloaded'})
         except (RecreationStopped, FFmpegCancelled):
             item.update(download_status='pending', path='')
             batch.save()
             counts['stopped'] = True
+            break
+        except DownloadQueueBlocked as exc:
+            batch.fail_download(item['video_id'], str(exc))
+            counts['failed'] += 1
+            counts['pause_reason'] = str(exc)
             break
         except Exception as exc:
             message = str(exc) if isinstance(exc, (RecreationPlatformError, ValueError)) else type(exc).__name__
@@ -372,4 +390,10 @@ def download_platform_materials(batch, client, identities=None, *, transfer=None
             counts['failed'] += 1
             if progress:
                 progress({**event, 'phase': 'failed', 'message': message})
-    return counts
+        else:
+            if on_saved:
+                on_saved(item)
+            remaining.pop(item['video_id'])
+            if progress:
+                progress({**event, 'phase': 'downloaded'})
+    return {**counts, 'remaining_ids': list(remaining)}

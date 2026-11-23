@@ -13,6 +13,367 @@ from src.media import run
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_queue_keeps_failed_id_for_next_resume_without_blocking_other_batches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            first, second = page.workspace.create('4100-第一剧\n4200-第二剧')
+            for batch, ids in ((first, ['1','2']), (second, ['1'])):
+                drama = batch.state['dramas'][0]
+                batch.record_page(drama, [{'id': x,'name': x} for x in ids], 1)
+                page.workspace.enqueue(batch.folder, [f"{drama['id']}_{x}" for x in ids])
+            def start(*args, **kwargs):
+                page._set_collection_busy(True)
+            with patch.object(page,'_start_browser_task', side_effect=start) as worker:
+                page.resume_download_queue()
+                page.collection_result({'completed':1,'failed':1,'skipped':0,'stopped':False,
+                                        'remaining_ids':['4100_2']})
+                page.collection_finished()
+                self.app.processEvents()
+                self.assertEqual(page.batch.folder, second.folder)
+                page.collection_result({'completed':1,'failed':0,'skipped':0,'stopped':False,'remaining_ids':[]})
+                page.collection_finished()
+                self.app.processEvents()
+                self.assertFalse(page.queue_running)
+                stored = type(page.workspace)(page.workspace.path, folder)
+                self.assertEqual(stored.queue, [{'folder':str(first.folder),'identities':['4100_2']}])
+                page.resume_download_queue()
+                worker.assert_called_with('download', identities=['4100_2'])
+                page.stop_collection()
+                page.collection_finished()
+            page.close()
+
+    def test_queue_save_failure_restores_the_active_job(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            batch = page.workspace.create('4100-测试剧')[0]
+            page.workspace.enqueue(batch.folder, ['4100_1'])
+            with patch.object(page,'_start_browser_task', side_effect=lambda *a,**kw: page._set_collection_busy(True)):
+                page.resume_download_queue()
+            before = list(page.workspace.queue)
+            page.collection_result({'completed':1,'failed':0,'skipped':0,'stopped':False,'remaining_ids':[]})
+            with patch.object(page.workspace,'save', side_effect=OSError):
+                page.collection_finished()
+            self.assertEqual(page.workspace.queue, before)
+            self.assertFalse(page.queue_running)
+            self.assertIn('保存失败', page.message.text())
+            page.close()
+
+    def test_blocked_queue_keeps_current_position_and_independent_pending_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            first, second = page.workspace.create('4100-第一剧\n4200-第二剧')
+            page.workspace.enqueue(first.folder, ['4100_1','4100_2'])
+            page.workspace.enqueue(second.folder, ['4200_1'])
+            with patch.object(page,'_start_browser_task', side_effect=lambda *a,**kw: page._set_collection_busy(True)) as worker:
+                page.resume_download_queue()
+                page.collection_result({'completed':1,'failed':1,'skipped':0,'stopped':False,
+                                        'remaining_ids':['4100_2'], 'pause_reason':'智投登录已失效'})
+                page.collection_finished()
+                self.app.processEvents()
+                worker.assert_called_once()
+            self.assertFalse(page.queue_running)
+            self.assertIn('登录已失效', page.collection_status.text())
+            self.assertEqual(page.collection_bar.format(), '下载队列已暂停')
+            self.assertEqual([j['identities'] for j in page.workspace.queue], [['4100_2'], ['4200_1']])
+            self.assertIn('2 批 / 2 条', page.queue_summary.text())
+            page.close()
+
+    def test_recreation_director_precedence_and_default_survives_restart(self):
+        from src.upload import load_upload_preferences, remember_upload_preferences
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            path = Path(folder) / 'upload-prefs.json'
+            page.platform.preferences_path = path
+            remember_upload_preferences(path, drama_name='一剧', drama_platform_id='4100',
+                                        director='专属编导', uploader_initials='TEST')
+            page.platform.upload_preferences = load_upload_preferences(path)
+            with patch('src.recreation_workflow.QInputDialog.getText', return_value=('默认编导', True)):
+                page.edit_default_director()
+            stored = load_upload_preferences(path)
+            self.assertEqual(stored['default_director'], '默认编导')
+            page.platform.upload_preferences = stored
+            self.assertEqual(page.resolve_upload_director('一剧', '4100'), '专属编导')
+            self.assertEqual(page.resolve_upload_director('一剧', '4200'), '默认编导')
+            page.upload_director.setText('本轮编导')
+            self.assertEqual(page.resolve_upload_director('一剧', '4100'), '本轮编导')
+            with patch('src.recreation_workflow.QInputDialog.getText', return_value=('', True)):
+                page.edit_default_director()
+            self.assertEqual(load_upload_preferences(path)['default_director'], '')
+            self.assertEqual(load_upload_preferences(path)['dramas']['一剧']['ids']['4100']['director'], '专属编导')
+            page.close()
+
+    def test_batch_filter_preserves_checks_and_current_batch_but_scopes_actions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            first, second = page.workspace.create('4100-同名剧\n4200-同名剧')
+            page.refresh_batch_list()
+            page.batch_list.setCurrentRow(0)
+            for row in range(2):
+                page.batch_list.item(row).setCheckState(Qt.Checked)
+            page.batch_search.setText('4200')
+            self.assertEqual(page.batch.folder, first.folder)
+            self.assertEqual(page.checked_batch_folders(), [str(second.folder)])
+            page.batch_search.clear()
+            self.assertEqual(page.checked_batch_folders(), [str(first.folder), str(second.folder)])
+            self.assertEqual(page.batch_list.currentRow(), 0)
+            page.close()
+
+    def test_local_only_import_never_downloads_missing_items_or_adds_unchecked_items(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            batch = page.workspace.create('4100-测试剧')[0]
+            batch.record_page(batch.state['dramas'][0], [{'id':str(i),'name':str(i)} for i in range(1,4)], 1)
+            path = Path(folder)/'ready.mp4'
+            path.write_bytes(b'video')
+            for i in (0, 2):
+                batch.state['sources'][i].update(path=str(path), download_status='downloaded')
+            batch.save()
+            with patch.object(page, '_start_browser_task') as start:
+                for mode in ('md5', 'micro'):
+                    page.request_processing_import(mode, str(batch.folder), ['4100_1','4100_2'], local_only=True)
+                    self.assertEqual([x['video_id'] for x in page.workspace.inputs[mode]], ['4100_1'])
+                    self.assertIn('跳过 1 条', page.message.text())
+                start.assert_not_called()
+            page.close()
+
+    def test_active_upload_queue_cannot_be_rebuilt_with_stale_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            page.upload_groups = [{'drama': '既有批次', 'outputs': []}]
+            page.begin_upload()
+            self.assertIn('当前队列', page.message.text())
+            self.assertEqual(page.upload_groups[0]['drama'], '既有批次')
+            page.close()
+
+    def test_upload_does_not_advance_when_success_cannot_be_saved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            group = {'folder': folder, 'drama_id': '4100', 'drama': '测试剧', 'outputs': []}
+            page.current_upload = group
+            page.upload_groups = [group]
+            with patch('src.recreation_workflow.record_upload', side_effect=OSError('disk')):
+                page.upload_completed({'uploaded': 1, 'stopped': False})
+            self.assertEqual(page.upload_groups, [group])
+            self.assertFalse(page.next_upload_button.isEnabled())
+            page.close()
+
+    def test_101_distinct_files_advance_once_and_display_exact_queue_snapshot(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            batch = page.workspace.create('4100-测试剧')[0]
+            products = []
+            for i in range(101):
+                path = batch.folder / '加工成品' / 'run123' / '测试剧' / '改md5' / f'{i:03d}.mp4'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'video')
+                products.append({'path': str(path), 'drama': '测试剧', 'mode': 'md5', 'metadata': {},
+                                 'upload_drama_info': {'drama_platform_id': '4100', 'drama_name': '测试剧'}})
+            batch.add_outputs(products)
+            page.refresh_outputs()
+            page.output_search.setText('run123')
+            page.set_checked(page.output_table, 'all')
+            page.upload_director.setText('编导')
+            page.platform.uploader_initials.setText('TEST')
+            page.begin_upload()
+            page.platform.browser = Mock()
+            page.platform.browser.page.return_value.devToolsId.return_value = 'target'
+            actual = []
+            def stage():
+                group = page.current_upload
+                items = [{'original_path': item['path'], 'upload_name': Path(item['path']).name}
+                         for item in group['outputs']]
+                page.platform.upload_batches = [{'items': items}]
+                page.files_for_upload_ready({})
+                page.files_for_upload_ready({})  # duplicate readiness must not send another upload
+                return True
+            def send(ws, names, drama_id, **kwargs):
+                actual.append(list(names))
+                return {'uploaded': len(names), 'stopped': False}
+            with patch('src.recreation_workflow.find_page_ws_url', return_value='ws://test'), \
+                    patch('src.recreation_workflow.evaluate_edge_page', return_value={'no_form': True}), \
+                    patch.object(page.platform, 'prepare_upload', side_effect=stage), \
+                    patch('src.recreation_workflow.upload_files', side_effect=send):
+                for number, size in enumerate((50, 50, 1), 1):
+                    self.assertIn(f'第 {number} / 3 批', page.upload_batch_summary.text())
+                    shown = [page.upload_batch_files.item(i).text() for i in range(size)]
+                    self.assertFalse(page.auto_button.isEnabled())
+                    page.continue_upload()
+                    page.continue_upload()
+                    deadline = time.monotonic() + 5
+                    while page.work_in_progress() and time.monotonic() < deadline:
+                        self.app.processEvents()
+                        time.sleep(.005)
+                    self.assertFalse(page.work_in_progress())
+                    self.assertEqual(actual[-1], shown)
+            self.assertEqual([x for group in actual for x in group], [f'{i:03d}.mp4' for i in range(101)])
+            self.assertEqual(page.output_table.rowCount(), 0)
+            self.assertEqual(len(RecreationBatch.load(batch.folder).state['uploads']), 3)
+            page.platform.browser = None
+            page.close()
+
+    def test_auto_submit_only_advances_after_receipt_is_saved_and_form_closes(self):
+        from unittest.mock import Mock
+        from PySide6.QtWidgets import QMessageBox
+        from src.recreation_platform import RecreationPlatformError
+
+        for first_result in ('confirmed','uncertain','close_failed','save_failed'):
+            with self.subTest(first_result=first_result), tempfile.TemporaryDirectory() as folder:
+                page=self.page(folder)
+                batch=page.workspace.create('4100-测试剧')[0]
+                products=[]
+                for i in range(51):
+                    p=batch.folder/f'{i:02d}.mp4'
+                    p.write_bytes(b'video')
+                    products.append({'path':str(p),'drama':'测试剧','mode':'md5','metadata':{},
+                        'upload_drama_info':{'drama_platform_id':'4100','drama_name':'测试剧'}})
+                batch.add_outputs(products)
+                page.refresh_outputs()
+                page.set_checked(page.output_table,'all')
+                page.upload_director.setText('编导')
+                page.platform.uploader_initials.setText('TEST')
+                self.assertEqual(page.submit_mode.currentData(),'manual')
+                page.submit_mode.setCurrentIndex(1)
+                with patch.object(QMessageBox,'exec',return_value=QMessageBox.No):
+                    page.begin_upload()
+                self.assertFalse(page.upload_groups)
+                with patch.object(QMessageBox,'exec',return_value=QMessageBox.Yes):
+                    page.begin_upload()
+                self.assertFalse(page.submit_mode.isEnabled())
+                self.assertEqual([len(g['outputs']) for g in page.upload_groups],[50,1])
+                page.platform.browser=Mock()
+                page.platform.browser.page.return_value.devToolsId.return_value='target'
+                attempts=[]
+                transfers=[]
+                def entries():
+                    return RecreationBatch.load(batch.folder).state['uploads']
+                def stage():
+                    page.platform.upload_batches=[{'items':[{'original_path':item['path'],
+                        'upload_name':Path(item['path']).name} for item in page.current_upload['outputs']]}]
+                    page.files_for_upload_ready({})
+                    page.files_for_upload_ready({})
+                    return True
+                def send(ws,names,drama_id,**kw):
+                    transfers.append(list(names))
+                    if len(transfers)==2:
+                        self.assertEqual(entries()[0]['status'],'submitted')
+                    return {'uploaded':len(names),'failed':0,'stopped':False}
+                def submit(ws,attempt,names,drama,director,**kw):
+                    self.assertEqual(entries()[-1]['status'],'submission_review')
+                    attempts.append(list(names))
+                    if first_result=='uncertain':
+                        raise RecreationPlatformError('提交结果待核对')
+                    return [str(5000+int(Path(n).stem)) for n in names]
+                from src.recreation_upload import record_upload as save_record
+                def record(group,attempt,status,*a,**kw):
+                    if first_result=='save_failed' and status=='submitted':
+                        raise OSError('disk')
+                    return save_record(group,attempt,status,*a,**kw)
+                with patch('src.recreation_workflow.find_page_ws_url',return_value='ws://test'), \
+                     patch('src.recreation_workflow.evaluate_edge_page',return_value={'no_form':True}), \
+                     patch.object(page.platform,'prepare_upload',side_effect=stage), \
+                     patch('src.recreation_workflow.upload_files',side_effect=send), \
+                     patch('src.recreation_workflow.record_upload',side_effect=record), \
+                     patch('src.recreation_workflow.submit_uploaded_batch',side_effect=submit), \
+                     patch('src.recreation_workflow.close_submission_receipt',return_value=first_result!='close_failed'):
+                    page.continue_upload()
+                    page.continue_upload()
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline and (page.work_in_progress() or
+                          (first_result=='confirmed' and len(attempts)<2)):
+                        self.app.processEvents()
+                        time.sleep(.005)
+                    self.app.processEvents()
+                self.assertEqual(len(attempts),2 if first_result=='confirmed' else 1)
+                self.assertEqual(transfers,attempts)
+                if first_result=='confirmed':
+                    self.assertEqual([x['uploaded'] for x in entries()],[50,1])
+                    self.assertTrue(all(x['submitted'] for x in entries()))
+                    self.assertEqual(page.submit_mode.currentData(),'manual')
+                    self.assertFalse(page.upload_groups)
+                elif first_result=='close_failed':
+                    self.assertTrue(entries()[0]['submitted'])
+                    self.assertEqual([g['number'] for g in page.upload_groups],[2])
+                else:
+                    self.assertEqual(entries()[0]['status'],'submission_review')
+                    self.assertFalse(page.next_upload_button.isEnabled())
+                page.platform.browser=None
+                page.close()
+
+    def test_auto_handoff_keeps_ticket_when_busy_then_starts_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page=self.page(folder)
+            current={'outputs':[],'drama':'测试','number':2,'auto_submit':True}
+            page.upload_groups=[current]
+            page.auto_continue_group=current
+            page.external_work_in_progress=lambda:True
+            with patch.object(page,'continue_upload') as start:
+                page.upload_transfer_finished()
+                self.app.processEvents()
+                self.assertIs(page.auto_continue_group,current)
+                self.assertIn('等待',page.upload_status.text())
+                start.assert_not_called()
+                page.external_work_in_progress=lambda:False
+                page.resume_auto_upload()
+                page.resume_auto_upload()
+                start.assert_called_once()
+            page.close()
+
+    def test_new_upload_queue_keeps_sequence_after_restart_and_reads_old_records(self):
+        from datetime import date
+        from src.recreation_upload import record_upload
+        with tempfile.TemporaryDirectory() as folder:
+            page=self.page(folder)
+            batch=page.workspace.create('4100-测试剧')[0]
+            stored={'folder':str(batch.folder),'drama_id':'4100','outputs':[{'path':'old'}]}
+            record_upload(stored,'old','uploaded',1,names=[f'APP-繁花-王俨-改md5-测试剧-QA-{date.today():%y%m%d}-09.mp4'])
+            path=batch.folder/'new.mp4'
+            path.write_bytes(b'test')
+            batch=RecreationBatch.load(batch.folder)
+            batch.add_outputs([{'path':str(path),'mode':'md5','metadata':{},'drama':'测试剧',
+                'upload_drama_info':{'drama_platform_id':'4100','drama_name':'测试剧'}}])
+            for expected in (10,11):
+                page.workspace.folders=[str(batch.folder)]
+                page.refresh_outputs()
+                page.set_checked(page.output_table,'all')
+                page.upload_director.setText('编导')
+                page.platform.uploader_initials.setText('QA')
+                page.begin_upload()
+                self.assertEqual(page.upload_groups[0]['sequence_start'],expected)
+                self.assertEqual(page.upload_groups[0]['upload_date'],date.today())
+                page.close()
+                page=self.page(folder)
+            page.close()
+
+    def test_uncertain_upload_is_not_retried_after_restart(self):
+        from src.recreation_upload import record_upload
+        with tempfile.TemporaryDirectory() as folder:
+            page = self.page(folder)
+            batch = page.workspace.create('4100-测试剧')[0]
+            path = batch.folder / 'ready.mp4'
+            path.write_bytes(b'video')
+            item = {'path': str(path), 'drama': '测试剧', 'mode': 'md5', 'metadata': {},
+                    'upload_drama_info': {'drama_platform_id': '4100', 'drama_name': '测试剧'}}
+            batch.add_outputs([item])
+            group = {'folder': str(batch.folder), 'drama_id': '4100', 'drama': '测试剧', 'outputs': [item]}
+            record_upload(group, 'attempt-a', 'review')
+            page.upload_groups, page.current_upload = [group], group
+            page.upload_busy, page.upload_attempt = True, 'attempt-a'
+            page.upload_failed('测试断开')
+            self.assertFalse(page.next_upload_button.isEnabled())
+            self.assertFalse(page.auto_button.isEnabled())
+            page.close()
+            reopened = RecreationWorkflowPage({'output_root': folder,
+                'recreation_preferences_path': str(Path(folder) / 'prefs.json')}, restore=True)
+            self.assertEqual(reopened.output_table.rowCount(), 0)
+            reopened.output_state.setCurrentIndex(reopened.output_state.findData('review'))
+            reopened.set_checked(reopened.output_table, 'all')
+            self.assertEqual(reopened.output_table.rowCount(), 1)
+            reopened.begin_upload()
+            self.assertFalse(reopened.upload_groups)
+            self.assertIn('不能直接重传', reopened.message.text())
+            reopened.close()
+
     def test_local_import_uses_dialog_batch_not_current_download_batch(self):
         from PySide6.QtWidgets import QDialog
         with tempfile.TemporaryDirectory() as folder:
@@ -56,12 +417,14 @@ class WorkflowTests(unittest.TestCase):
             page.current_upload, page.upload_groups = group, [group]
             page.upload_completed({'uploaded': 1, 'stopped': False})
             self.assertEqual(RecreationBatch.load(page.batch.folder).state['uploads'][0]['submitted'], False)
+            self.assertEqual(page.catalog, [])
+            page.output_state.setCurrentIndex(page.output_state.findData('uploaded'))
             self.assertTrue(page.catalog[0]['uploaded_before'])
             page.set_checked(page.output_table, 'all')
-            with patch('src.recreation_workflow.QMessageBox.question', return_value=QMessageBox.No), \
-                    patch.object(page, 'continue_upload') as upload:
+            with patch('src.recreation_workflow.QMessageBox.question', return_value=QMessageBox.No) as ask:
                 page.begin_upload()
-                upload.assert_not_called()
+                ask.assert_called_once()
+                self.assertFalse(page.upload_groups)
             page.close()
 
     def test_download_queue_pauses_durably_and_advances_between_independent_batches(self):
@@ -260,7 +623,7 @@ class WorkflowTests(unittest.TestCase):
             page.output_table.setRowCount(53)
             for i in range(53):
                 page.output_table.setItem(i, 0, page._check_item(str(i), {str(i)}))
-            page.platform.director.setText('编导')
+            page.upload_director.setText('编导')
             page.platform.uploader_initials.setText('TEST')
             with patch.object(page, 'continue_upload'):
                 page.begin_upload()

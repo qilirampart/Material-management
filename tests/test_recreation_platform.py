@@ -14,6 +14,26 @@ from src.media import run
 
 
 class RecreationPlatformTests(unittest.TestCase):
+    def test_login_or_network_pause_keeps_incomplete_items_without_touching_later_files(self):
+        from unittest.mock import Mock
+        from src.recreation_platform import DownloadQueueBlocked
+        for reason in ('请重新登录', '请检查网络'):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as folder:
+                batch = RecreationBatch.create(folder, [{'id':'4100','name':'测试剧'}])
+                batch.record_page(batch.state['dramas'][0], [{'id':str(i), 'name':str(i)} for i in (1,2,3)], 1)
+                first = Path(folder)/'ready.mp4'
+                first.touch()
+                batch.state['sources'][0].update(path=str(first), download_status='downloaded')
+                batch.save()
+                client = Mock()
+                client.source_url.side_effect = DownloadQueueBlocked(reason)
+                result = download_platform_materials(batch, client)
+                client.source_url.assert_called_once_with('2')
+                self.assertEqual(result['remaining_ids'], ['4100_2', '4100_3'])
+                self.assertEqual(result['pause_reason'], reason)
+                self.assertEqual([x['download_status'] for x in RecreationBatch.load(batch.folder).state['sources']],
+                                  ['downloaded','failed','pending'])
+
     def test_download_retries_connection_failure_and_replaces_partial_bytes(self):
         class Response:
             status_code = 200

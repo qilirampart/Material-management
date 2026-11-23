@@ -6,8 +6,9 @@ import urllib.request
 
 import websocket
 
-FILE_PREVIEW_WAIT_ATTEMPTS = 30
-FILE_PREVIEW_WAIT_INTERVAL = 0.1
+FILE_PREVIEW_WAIT_ATTEMPTS = 60
+FILE_PREVIEW_WAIT_INTERVAL = 0.25
+FILE_PREVIEW_WAIT_LIMIT = 180
 PAGE_EVALUATION_TIMEOUT = 10
 
 
@@ -100,7 +101,7 @@ def navigate_edge_page(ws_url: str, action: str) -> dict:
         socket.close()
 
 
-def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
+def set_edge_file_input(ws_url: str, element_expression: str, paths) -> dict:
     files = [str(path) for path in paths]
     socket = websocket.create_connection(ws_url, timeout=5, suppress_origin=True)
     try:
@@ -121,47 +122,8 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
         file_response = _receive_response(socket, 2)
         if file_response.get("error"):
             raise RuntimeError(file_response["error"].get("message", "选择视频文件失败。"))
-        socket.send(json.dumps({
-            "id": 3,
-            "method": "Runtime.callFunctionOn",
-            "params": {
-                "objectId": object_id,
-                "functionDeclaration": (
-                    "function(){"
-                    "const win=this.ownerDocument.defaultView;"
-                    "const plugin=win.jQuery?.(this).data?.('fileinput');"
-                    "const previews=[...(this.closest('.file-input')?.querySelectorAll('.file-preview-frame')||[])];"
-                    "previews.at(-1)?.scrollIntoView?.({block:'center',inline:'nearest'});"
-                    "return {inputCount:this.files.length,"
-                    "pluginCount:plugin?.getFilesCount?.()??null,"
-                    "previewCount:previews.length,"
-                    "videoPreviewCount:previews.filter(frame=>frame.dataset.template==='video'&&frame.querySelector('video')).length,"
-                    "names:[...this.files].map(file=>file.name)}"
-                    "}"
-                ),
-                "returnByValue": True,
-            },
-        }))
-        changed = _receive_response(socket, 3)
-        verification = changed.get("result", {}).get("result", {}).get("value", {})
-        input_count = int(verification.get("inputCount", 0))
-        plugin_count = verification.get("pluginCount")
-        preview_count = verification.get("previewCount")
-        video_preview_count = verification.get("videoPreviewCount")
-        request_id = 4
-        while (
-            input_count == len(files)
-            and plugin_count is not None
-            and int(plugin_count) == input_count
-            and (
-                preview_count is None
-                or video_preview_count is None
-                or int(preview_count) < input_count
-                or int(video_preview_count) < input_count
-            )
-            and request_id < 4 + FILE_PREVIEW_WAIT_ATTEMPTS
-        ):
-            time.sleep(FILE_PREVIEW_WAIT_INTERVAL)
+
+        def read_previews(request_id):
             socket.send(json.dumps({
                 "id": request_id,
                 "method": "Runtime.callFunctionOn",
@@ -183,12 +145,47 @@ def set_edge_file_input(ws_url: str, element_expression: str, paths) -> int:
                     "returnByValue": True,
                 },
             }))
-            checked = _receive_response(socket, request_id)
-            verification = checked.get("result", {}).get("result", {}).get("value", verification)
-            input_count = int(verification.get("inputCount", input_count))
-            plugin_count = verification.get("pluginCount", plugin_count)
-            preview_count = verification.get("previewCount", preview_count)
-            video_preview_count = verification.get("videoPreviewCount", video_preview_count)
+            response = _receive_response(socket, request_id)
+            result = response.get("result", {})
+            value = result.get("result", {}).get("value")
+            if not isinstance(value, dict) or result.get("exceptionDetails"):
+                raise EdgeFileSelectionError("读取平台视频预览失败，请核对当前表单。")
+            return value
+
+        verification = read_previews(3)
+        input_count = int(verification.get("inputCount", 0))
+        plugin_count = verification.get("pluginCount")
+        preview_count = verification.get("previewCount")
+        video_preview_count = verification.get("videoPreviewCount")
+        request_id = 4
+        idle_checks = 0
+        most_previews = int(video_preview_count or 0)
+        deadline = time.monotonic() + FILE_PREVIEW_WAIT_LIMIT
+        while (
+            input_count == len(files)
+            and plugin_count is not None
+            and int(plugin_count) == input_count
+            and (
+                preview_count is None
+                or video_preview_count is None
+                or int(preview_count) < input_count
+                or int(video_preview_count) < input_count
+            )
+            and idle_checks < FILE_PREVIEW_WAIT_ATTEMPTS
+            and time.monotonic() < deadline
+        ):
+            time.sleep(FILE_PREVIEW_WAIT_INTERVAL)
+            verification = read_previews(request_id)
+            input_count = int(verification.get("inputCount", 0))
+            plugin_count = verification.get("pluginCount")
+            preview_count = verification.get("previewCount")
+            video_preview_count = verification.get("videoPreviewCount")
+            current = int(video_preview_count or 0)
+            if current > most_previews:
+                most_previews = current
+                idle_checks = 0
+            else:
+                idle_checks += 1
             request_id += 1
         if (
             input_count == len(files)

@@ -939,6 +939,7 @@ class PlatformPage(QWidget):
                 drama_platform_id=self.drama_id.currentText(),
                 director=self.director.text(),
                 uploader_initials=self.uploader_initials.text(),
+                upload_date=getattr(self, 'upload_sequence_date', None),
                 sequence_start=getattr(self, 'upload_sequence_start', 1),
             )
             staging = self.batch_folder / 'upload-staging'
@@ -1023,11 +1024,15 @@ class PlatformPage(QWidget):
             QMessageBox.information(self, '尚未打开平台', '请先打开公司平台并完成扫码登录。')
             return
         if not self.upload_batches:
+            if self.workflow == 'recreation':
+                self.operation_failed.emit('没有可用的暂存批次，请检查本批文件')
             return
         batch = self.upload_batches[self.batch_selector.currentData() or 0]
         paths = [item['upload_path'] for item in batch['items']]
         if not all(Path(path).is_file() for path in paths):
             self.status.setText('上传暂存文件缺失，请重新生成批次')
+            if self.workflow == 'recreation':
+                self.operation_failed.emit(self.status.text())
             return
         self.fill_button.setEnabled(False)
         self.status.setText(f"正在填写第 {batch['index']} 批 · {len(paths)} 条")
@@ -1093,6 +1098,8 @@ class PlatformPage(QWidget):
         if result.get('ok'):
             self.status.setText(result.get('message', '平台表单已填写'))
             self.preview.setText(self.preview.text() + '\n已交给网页文件选择器；未保存草稿，未提交审核。')
+            if self.workflow == 'recreation':
+                self.operation_failed.emit('平台没有返回可用的文件选择控件，未开始上传')
         else:
             self.status.setText(result.get('message', '页面填写失败，请确认已经登录并进入素材管理'))
             self.operation_failed.emit(self.status.text())

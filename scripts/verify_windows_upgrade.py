@@ -12,6 +12,15 @@ import subprocess
 import tempfile
 
 
+OBSOLETE_RUNTIME_FILES = ('numpy/_core/legacy.pyd','numpy.libs/legacy.dll','obsolete-runtime-file.pyd')
+
+
+def assert_obsolete_runtime_removed(internal):
+    for name in OBSOLETE_RUNTIME_FILES:
+        if (internal/name).exists():
+            raise RuntimeError('Obsolete dependency survived upgrade: '+name)
+
+
 def verify(installer, evidence):
     installer=Path(installer).resolve()
     evidence=Path(evidence).resolve(); evidence.mkdir(parents=True,exist_ok=True)
@@ -20,10 +29,12 @@ def verify(installer, evidence):
     with tempfile.TemporaryDirectory(prefix='upgrade-check-',dir=evidence) as temporary:
         root=Path(temporary).resolve(); app=root/'app'; internal=app/'_internal'
         assert app.is_relative_to(root) and root.is_relative_to(evidence)
-        for name in ('numpy/_core/legacy.pyd','numpy.libs/legacy.dll','obsolete-runtime-file.pyd'):
+        for name in OBSOLETE_RUNTIME_FILES:
             path=internal/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'obsolete')
         preserved_user_files={}
         for name in ('runtime/desktop_config.json','runtime/recreation-workspace.json',
+                     'runtime/recreation-schedule.json','runtime/micro-presets.json',
+                     'runtime/recreation-upload-sequences.sqlite3','browser/keep-test-sentinel',
                      'output/素材再创作/old-batch/recreation.json','output/videos/keep.mp4'):
             path=app/name;path.parent.mkdir(parents=True,exist_ok=True)
             content=b'user-data-must-survive';path.write_bytes(content)
@@ -32,9 +43,7 @@ def verify(installer, evidence):
         subprocess.run([str(installer),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
             '/NOICONS','/TASKS=',f'/DIR={app}',f'/LOG={evidence/"install.log"}'],
             check=True,timeout=240,**flags)
-        for name in ('numpy','numpy.libs','obsolete-runtime-file.pyd'):
-            if (internal/name).exists():
-                raise RuntimeError('Obsolete dependency survived upgrade: '+name)
+        assert_obsolete_runtime_removed(internal)
         for name,content in preserved_user_files.items():
             if (app/name).read_bytes()!=content:
                 raise RuntimeError('User data changed during upgrade: '+name)

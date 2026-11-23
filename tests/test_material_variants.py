@@ -123,7 +123,21 @@ class MaterialVariantTests(unittest.TestCase):
                 {'video_id': 'good', 'path': str(source), 'drama': '测试剧'},
             ], Path(folder) / 'out', VariantOptions(mode='md5'))
             self.assertEqual(result['failed'][0]['video_id'], 'missing')
+            self.assertEqual(result['failed'][0]['stage'], '读取原片')
+            self.assertIn('原片不存在', result['failed'][0]['error'])
             self.assertEqual(result['outputs'][0]['source_video_id'], 'good')
+
+    def test_retry_runs_only_requested_versions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root/'source.mp4'
+            run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i',
+                 'testsrc2=size=160x240:rate=15:duration=1', '-c:v', 'libx264', str(source)])
+            item = {'video_id': 'sample', 'path': str(source), 'drama': '测试剧'}
+            result = generate_variants([item], root/'out', VariantOptions(mode='md5', variants=3),
+                                       versions_by_id={'sample': [2]})
+            self.assertFalse(result['failed'])
+            self.assertEqual([item['version'] for item in result['outputs']], [2])
 
     @patch('src.material_variants.transcode_for_upload_bitrate', side_effect=FFmpegCancelled('stop'))
     @patch('src.material_variants.probe', return_value={'duration': 10})

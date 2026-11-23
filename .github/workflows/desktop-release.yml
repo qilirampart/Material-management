@@ -14,7 +14,7 @@ on:
       version:
         description: Release version without the v prefix
         required: true
-        default: 0.5.6
+        default: 0.5.7
         type: string
 
 permissions:
@@ -198,6 +198,10 @@ jobs:
           name: v${{ needs.prepare.outputs.version }}
           generate_release_notes: true
           body: |
+            素材再创作：支持按本机历史定时扫描新素材，并按所选流程只下载、改 MD5 或套用微创新模板。
+
+            上传默认手动提交，也可按本轮开启自动提交审核。确认回执后才继续下一批；结果不明时暂停。
+
             Windows：推荐下载 `DianzhongMaterialAssistant-Setup-版本号.exe` 完整安装包，无需另装 Python 或 FFmpeg。
 
             macOS：提供未签名构建包，尚未完成真实设备验收；首次启动请按系统安全提示操作。

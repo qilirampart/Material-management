@@ -118,10 +118,27 @@ class RecreationWorkspace:
         return result
 
     def enqueue(self, folder, identities):
-        job = {'folder': str(Path(folder).resolve()), 'identities': list(dict.fromkeys(identities))}
-        if job not in self.queue:
-            self.queue.append(job)
-        self.save()
+        folder = str(Path(folder).resolve())
+        queued = {identity for job in self.queue if job['folder'] == folder for identity in job['identities']}
+        additions = [identity for identity in dict.fromkeys(identities) if identity not in queued]
+        if additions:
+            self._save_download_queue([*self.queue, {'folder': folder, 'identities': additions}])
+
+    def complete_download_job(self, remaining=(), *, defer=False):
+        """Commit the new head position only if the updated queue is saved."""
+        head, *tail = self.queue
+        if remaining:
+            job = {**head, 'identities': list(remaining)}
+            tail = [*tail, job] if defer else [job, *tail]
+        self._save_download_queue(tail)
+
+    def _save_download_queue(self, queue):
+        previous, self.queue = self.queue, queue
+        try:
+            self.save()
+        except OSError:
+            self.queue = previous
+            raise
 
     def add_inputs(self, mode, folder, identities):
         entries = self.inputs[mode]

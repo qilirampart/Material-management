@@ -4,11 +4,13 @@ import re
 import os
 import shutil
 import json
+import sqlite3
 import filecmp
 import time
 import uuid
 from threading import Lock
 from datetime import date
+from contextlib import closing
 from pathlib import Path
 
 from src.media import (
@@ -22,6 +24,7 @@ from src.media import (
 
 UPLOAD_BATCH_LIMIT = 50
 UPLOAD_NAME_PREFIX = "APP-繁花-王俨-改md5-情报台"
+RECREATION_UPLOAD_PREFIXES = {'md5':'APP-繁花-王俨-改md5','micro':'APP-繁花-王俨-微创新'}
 FIXED_DEPARTMENTS = [
     "IAP投放组", "代理组", "免费IAA投放部", "免费投放三组", "免费投放二组", "免费投放四组",
     "免费投放组", "厂商-代理", "合肥免费投放组", "客户端一组", "客户端二组", "小说投放一部",
@@ -122,6 +125,39 @@ def safe_filename_part(value):
     return cleaned
 
 
+def recreation_upload_namespace(drama, uploader, upload_date):
+    return f'{safe_filename_part(drama)}-{safe_filename_part(uploader)}-{upload_date:%y%m%d}'.casefold()
+
+
+def reserve_recreation_upload_sequences(path, requests, previous_names):
+    """Reserve non-overlapping ranges before building any staging plan."""
+    pending = list(requests)
+    high_water = dict.fromkeys((key for key,_ in pending),0)
+    prefixes = tuple(p.casefold()+'-' for p in RECREATION_UPLOAD_PREFIXES.values())
+    for name in previous_names:
+        stem = Path(name).stem.casefold()
+        for prefix in prefixes:
+            if not stem.startswith(prefix):
+                continue
+            key,_,suffix=stem[len(prefix):].rpartition('-')
+            if key in high_water and re.fullmatch(r'[0-9]{1,12}',suffix):
+                high_water[key]=max(high_water[key],int(suffix))
+            break
+    path=Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    starts=[]
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('CREATE TABLE IF NOT EXISTS upload_sequence (scope TEXT PRIMARY KEY, last INTEGER NOT NULL)')
+        db.execute('BEGIN IMMEDIATE')
+        for key,count in pending:
+            row = db.execute('SELECT last FROM upload_sequence WHERE scope=?',(key,)).fetchone()
+            start = max(row[0] if row else 0,high_water[key])+1
+            db.execute('INSERT INTO upload_sequence VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET last=excluded.last',
+                       (key,start+count-1))
+            starts.append(start)
+    return starts
+
+
 def build_upload_plan(
     materials,
     *,
@@ -163,9 +199,8 @@ def build_upload_plan(
         suffix = original.suffix.lower() or ".mp4"
         prefix = UPLOAD_NAME_PREFIX
         processing_mode = material.get('processing_mode') or record.get('processing_mode')
-        if processing_mode in {'micro', 'md5'}:
-            kind = '微创新' if processing_mode == 'micro' else '改md5'
-            prefix = f'APP-繁花-王俨-{kind}'
+        if processing_mode in RECREATION_UPLOAD_PREFIXES:
+            prefix = RECREATION_UPLOAD_PREFIXES[processing_mode]
         name = f"{prefix}-{drama_name}-{uploader_initials}-{upload_date:%y%m%d}-{sequence:02d}{suffix}"
         items.append({
             "video_id": material.get("video_id", ""),
@@ -326,6 +361,8 @@ def load_upload_preferences(path):
         data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         data = {}
+    if not isinstance(data, dict):
+        data = {}
     stored_dramas = data.get("dramas") if isinstance(data.get("dramas"), dict) else {}
     dramas = {}
     for name, stored in stored_dramas.items():
@@ -345,6 +382,7 @@ def load_upload_preferences(path):
     return {
         "dramas": dramas,
         "uploader_initials": str(data.get("uploader_initials", "")).strip(),
+        "default_director": str(data.get("default_director") or "").strip(),
     }
 
 
@@ -377,6 +415,13 @@ def remember_upload_preferences(path, *, drama_name, drama_platform_id, director
     drama["last_id"] = platform_id
     preferences["uploader_initials"] = str(uploader_initials).strip()
     _write_upload_preferences(path, preferences)
+
+
+def remember_default_director(path, director):
+    preferences = load_upload_preferences(path)
+    preferences['default_director'] = director.strip()
+    _write_upload_preferences(path, preferences)
+    return preferences
 
 
 def forget_upload_preference(path, drama_name, drama_platform_id):

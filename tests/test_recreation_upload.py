@@ -2,7 +2,10 @@ import unittest
 import json
 import subprocess
 from unittest.mock import patch
-from src.recreation_upload import upload_files, upload_script
+from src.recreation_upload import upload_files, upload_script, record_upload, reconcile_upload
+from src.recreation import RecreationBatch
+from pathlib import Path
+import tempfile
 
 
 class UploadTests(unittest.TestCase):
@@ -42,13 +45,26 @@ class UploadTests(unittest.TestCase):
         self.assertNotIn('document.cookie', script)
 
     def test_waits_for_both_server_and_preview_success(self):
-        states = [{'started': True}, {'running': True, 'uploaded': 0, 'success': 0, 'failed': 0},
+        states = [{'started': True}, {'running': False, 'uploaded': 0, 'success': 0, 'failed': 0},
+                  {'running': True, 'uploaded': 0, 'success': 0, 'failed': 0},
                   {'running': False, 'uploaded': 2, 'success': 2, 'failed': 0}]
         with patch('src.recreation_upload.evaluate_edge_page', side_effect=states) as evaluate, \
                 patch('src.recreation_upload.time.sleep'):
             result = upload_files('ws://test', ['one.mp4', 'two.mp4'], '4100')
             self.assertEqual(result['uploaded'], 2)
-            self.assertEqual(evaluate.call_count, 3)
+            self.assertEqual(evaluate.call_count, 4)
+
+    def test_reconcile_only_resolves_reviewed_files_and_keeps_unselected_uncertain(self):
+        with tempfile.TemporaryDirectory() as folder:
+            batch = RecreationBatch.create(Path(folder), [{'id': '4100', 'name': '测试剧'}])
+            paths = [str(batch.folder / f'{i}.mp4') for i in range(3)]
+            record_upload({'folder': batch.folder, 'drama_id': '4100',
+                           'outputs': [{'path': p} for p in paths]}, 'abc', 'review')
+            self.assertEqual(reconcile_upload(batch.folder, {paths[0]}, True), 1)
+            self.assertEqual(reconcile_upload(batch.folder, {paths[1]}, False), 1)
+            entries = RecreationBatch.load(batch.folder).state['uploads']
+            self.assertEqual({entry['status']: entry['files'] for entry in entries},
+                             {'review': [paths[2]], 'uploaded': [paths[0]]})
 
     def test_existing_unsaved_form_is_not_overwritten_or_retried(self):
         with patch('src.recreation_upload.evaluate_edge_page', return_value={'error': '存在未提交内容'}) as evaluate:
@@ -61,3 +77,13 @@ class UploadTests(unittest.TestCase):
             result = upload_files('ws://test', ['case.mp4'], '4100', should_stop=lambda: True)
             self.assertTrue(result['stopped'])
             evaluate.assert_not_called()
+
+    def test_uncertain_partial_transfer_never_clicks_again(self):
+        states = [{'started': True}, {'running': True, 'uploaded': 1, 'success': 1, 'failed': 1},
+                  {'running': False, 'uploaded': 1, 'success': 1, 'failed': 1}]
+        with patch('src.recreation_upload.evaluate_edge_page', side_effect=states) as evaluate, \
+                patch('src.recreation_upload.time.sleep'):
+            with self.assertRaisesRegex(RuntimeError, '未全部成功'):
+                upload_files('ws://test', ['one.mp4', 'two.mp4'], '4100')
+        self.assertEqual([('"start": true' in call.args[1]) for call in evaluate.call_args_list],
+                         [True, False, False])

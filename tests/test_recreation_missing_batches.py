@@ -70,19 +70,70 @@ class MissingBatchTests(unittest.TestCase):
             page.queue_running = False
             page.close()
 
+    def test_old_directory_gone_new_drama_can_query_and_download(self):
+        from unittest.mock import Mock
+        from shutil import copyfile
+        from src.media import run
+        from src.recreation import RecreationBatch
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            workspace = RecreationWorkspace(root/'prefs.json', root)
+            old = workspace.create('4100-旧剧')[0]
+            workspace.enqueue(old.folder, ['4100_1'])
+            old.folder.rename(root/'old-fixture-outside-batch-root')
+            page = RecreationWorkflowPage({'output_root': folder,
+                'recreation_preferences_path': str(root/'prefs.json')}, restore=True)
+            page.drama_input.setPlainText('4200-新剧')
+            page.create_batch()
+            new = page.batch
+            source = root/'fixture.mp4'
+            run(['ffmpeg','-y','-v','error','-f','lavfi','-i','testsrc2=size=160x240:rate=15:duration=1',
+                 '-c:v','libx264',str(source)])
+            page.platform.browser = Mock()
+            page.platform.browser.page.return_value.devToolsId.return_value = 'target'
+            client = Mock()
+            client.lookup.return_value = {'id':'4200','name':'新剧'}
+            client.fetch_page.return_value = {'items':[{'id':'2','name':'二创'}],'has_next':False,'total':1}
+            def wait_idle():
+                deadline = time.monotonic() + 10
+                while page.work_in_progress() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.01)
+                self.assertFalse(page.work_in_progress())
+            with patch('src.recreation_page.find_page_ws_url', return_value='ws://fixture'), \
+                    patch('src.recreation_page.PlatformMaterialClient', return_value=client), \
+                    patch('src.recreation_platform.download_material',
+                          side_effect=lambda url, path, **kw: copyfile(source, path)) as transfer:
+                page.query_materials()
+                wait_idle()
+                self.assertEqual([x['video_id'] for x in page.batch.state['sources']], ['4200_2'])
+                page.workspace.enqueue(new.folder, ['4200_2'])
+                page.resume_download_queue()
+                wait_idle()
+                self.assertEqual(page.queue_skipped, 1)
+                transfer.assert_called_once()
+                item = RecreationBatch.load(new.folder).state['sources'][0]
+                self.assertTrue(Path(item['path']).is_file())
+                self.assertEqual(page.workspace.queue, [])
+            page.platform.browser = None
+            page.close()
+
     def test_batch_removed_during_upload_preparation_releases_busy_state(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             w, old, new = self.fixture(root)
             page = RecreationWorkflowPage({'output_root': folder,
                 'recreation_preferences_path': str(root/'prefs.json')}, restore=True)
-            page.upload_groups = [{'folder':str(old.folder),'outputs':[]}]
+            page.upload_groups = [{'folder':str(old.folder),'outputs':[],'drama':'已删除批次'}]
             page.upload_busy = True
             page.auto_button.setEnabled(False)
             with patch.object(page.platform, 'prepare_upload') as upload:
                 page.prepare_next_upload('ws://unused')
                 upload.assert_not_called()
-            self.assertFalse(page.upload_busy);self.assertTrue(page.auto_button.isEnabled())
+            self.assertFalse(page.upload_busy)
+            self.assertFalse(page.auto_button.isEnabled())
+            self.assertTrue(page.cancel_upload_button.isEnabled())
             page.close()
 
     def test_cleanup_cancel_keeps_files_and_busy_cleanup_is_rejected(self):

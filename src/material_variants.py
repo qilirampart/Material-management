@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from src.batch import save_json
+from src.batch import save_json, error_summary
 from src.disk_budget import DiskSpaceLow, estimate_output_bytes, require_disk_space
 from src.media import (
     FFmpegCancelled, FFmpegError, MAXIMUM_UPLOAD_FILE_SIZE_BYTES,
@@ -566,13 +566,20 @@ def render_micro_preview(source, target, options, *, start=0, seconds=10, progre
             'source_path':str(Path(source).resolve()),'preview_section':preview_section}
 
 
-def generate_variants(items, output_root, options, *, progress=None, should_stop=None, resolved_plans=None):
+def generate_variants(items, output_root, options, *, progress=None, should_stop=None, resolved_plans=None,
+                      versions_by_id=None):
     options.validate()
+    all_versions = tuple(range(1, options.variants + 1))
+    planned = [(item, tuple(dict.fromkeys(versions_by_id.get(item['video_id'], ())))
+                if versions_by_id is not None else all_versions) for item in items]
+    planned = [(item, versions) for item, versions in planned if versions]
+    if any(v not in all_versions for _, versions in planned for v in versions):
+        raise ValueError('重试版本不在原加工范围内')
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
     root = Path(output_root) / run_id
     root.mkdir(parents=True, exist_ok=False)
     result = {'outputs': [], 'failed': [], 'stopped': False, 'manifest': str(root / 'manifest.json')}
-    total = len(items) * options.variants
+    total = sum(len(versions) for _, versions in planned)
     index = 0
 
     def persist():
@@ -582,11 +589,11 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
     metadata_cache = {}
     estimated_bytes = 0
     try:
-        for budget_index, item in enumerate(items, 1):
+        for budget_index, (item, versions) in enumerate(planned, 1):
             if should_stop and should_stop():
                 raise FFmpegCancelled('已停止磁盘预算检查')
             if progress:
-                progress({'phase':'budget_scan','index':budget_index,'total':len(items),'video_id':item['video_id']})
+                progress({'phase':'budget_scan','index':budget_index,'total':len(planned),'video_id':item['video_id']})
             source = Path(item['path']).resolve()
             try:
                 if str(source) not in metadata_cache:
@@ -594,7 +601,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     if 'file_size_bytes' not in meta:
                         meta['file_size_bytes'] = source.stat().st_size
                     metadata_cache[str(source)] = meta
-                estimated_bytes += estimate_output_bytes(metadata_cache[str(source)], options) * options.variants
+                estimated_bytes += estimate_output_bytes(metadata_cache[str(source)], options) * len(versions)
             except FFmpegCancelled:
                 raise
             except (OSError, ValueError, FFmpegError, subprocess.SubprocessError):
@@ -609,20 +616,23 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
         result.update(stopped=True, stop_reason=str(exc))
         persist()
         return result
-    for item in items:
+    for item, versions in planned:
         source_metadata = None
         source_md5 = None
-        for version in range(1, options.variants + 1):
+        for version in versions:
             if should_stop and should_stop():
                 result['stopped'] = True
                 persist()
                 return result
             index += 1
             target = None
+            stage = '读取原片'
             if progress:
                 progress({'phase': 'started', 'index': index, 'total': total, 'video_id': item['video_id']})
             try:
                 source = Path(item['path']).resolve()
+                if not source.is_file():
+                    raise ValueError('原片不存在，请重新导入或下载')
                 frozen=(resolved_plans or {}).get((str(source),version))
                 resolved=(replace(frozen,uploader=options.uploader).validate() if frozen is not None
                     else resolve_variant_options(options,str(source),version)) if options.mode=='micro' else options
@@ -631,6 +641,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                     if source_metadata is None:
                         source_metadata = probe(source, **({'should_stop': should_stop} if should_stop else {}))
                     source_md5 = file_md5(source, should_stop)
+                stage = '准备输出'
                 mode_name = '改md5' if options.mode == 'md5' else '微创新'
                 drama = safe_filename_part(item.get('drama') or '未命名剧集') or '未命名剧集'
                 uploader = safe_filename_part(options.uploader) or '未填'
@@ -638,11 +649,13 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target = target_dir / f'APP-繁花-王俨-{mode_name}-{drama}-{uploader}-{datetime.now():%y%m%d}-{index:03d}.mp4'
                 require_disk_space(target_dir, estimate_output_bytes(source_metadata, resolved))
+                stage = '生成成品'
                 if options.mode == 'md5':
                     run(['ffmpeg', '-y', '-v', 'error', '-i', str(source), '-map', '0:v:0',
                          '-map', '0:a?', '-c', 'copy', '-metadata', f'comment=variant-{uuid.uuid4().hex}',
                          '-movflags', '+faststart', str(target)],
                         timeout=max(600, int(source_metadata['duration'] * 2)), should_stop=should_stop)
+                    stage = '校验成品'
                     metadata = validate_video(target, should_stop=should_stop)
                     if metadata['file_size_bytes'] > MAXIMUM_UPLOAD_FILE_SIZE_BYTES:
                         raise ValueError('文件超过平台 510 MB 上限；仅改 MD5 不会缩小文件，请先剪辑或压缩')
@@ -656,6 +669,7 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                         text_context=item,
                         progress=(lambda phase: progress({'phase': phase, 'index': index, 'total': total,
                                                          'video_id': item['video_id']})) if progress else None)
+                stage = '校验成品'
                 output_md5 = file_md5(target, should_stop)
                 if output_md5 == source_md5:
                     raise ValueError('输出与原文件 MD5 相同，请检查处理参数')
@@ -681,11 +695,21 @@ def generate_variants(items, output_root, options, *, progress=None, should_stop
                 persist()
                 return result
             except (OSError, ValueError, FFmpegError, subprocess.SubprocessError) as exc:
+                retryable = True
                 if target:
-                    target.unlink(missing_ok=True)
-                    target.with_suffix('.cover.png').unlink(missing_ok=True)
-                message = str(exc) if isinstance(exc, ValueError) else ('本地视频处理失败：' + str(exc)[-600:])
-                result['failed'].append({'video_id': item['video_id'], 'version': version, 'error': message})
+                    try:
+                        target.unlink(missing_ok=True)
+                        target.with_suffix('.cover.png').unlink(missing_ok=True)
+                    except OSError:
+                        retryable = False
+                message = ('没有文件读取或写入权限' if isinstance(exc, PermissionError)
+                           else error_summary(exc).split(': ', 1)[-1])
+                if stage == '读取原片' and 'moov atom not found' in message.lower():
+                    message = 'MP4 文件不完整或已损坏，无法读取视频信息。请重新下载或更换原片。'
+                if not retryable:
+                    message += '；不完整文件未能清理，请先检查加工目录'
+                result['failed'].append({'video_id': item['video_id'], 'version': version, 'stage': stage,
+                                         'error': message, 'retryable': retryable})
                 if progress:
                     progress({'phase': 'failed', 'index': index, 'total': total,
                               'video_id': item['video_id'], 'error': message})
