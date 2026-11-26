@@ -11,7 +11,7 @@ from src.batch import save_json
 from src.task_input import local_files_to_rows
 from src.upload import safe_filename_part
 from src.media import validate_video
-from src.material_name_filter import normalize_exclude_name
+from src.material_name_filter import normalize_exclude_name, normalize_name_terms, NameFilter
 
 
 class RecreationStopped(RuntimeError):
@@ -37,7 +37,7 @@ def parse_dramas(text):
     return list(result.values())
 
 
-def collect_all_pages(drama, fetch_page, *, on_page=None, should_stop=None):
+def collect_all_pages(drama, fetch_page, *, on_page=None, should_stop=None, accept=None):
     """Adapter must return items and an explicit boolean has_next for each page.
 
     fetch_page runs in the platform's own authenticated browser session. No
@@ -58,8 +58,8 @@ def collect_all_pages(drama, fetch_page, *, on_page=None, should_stop=None):
         if identities in previous_pages or (not items and payload['has_next']):
             raise ValueError('分页未前进，采集已停止；已读取内容可保留')
         previous_pages.add(identities)
-        matching = [item for item in items if any(key in str(item.get('name', ''))
-                                                  for key in ('二创', '精剪原片'))]
+        matching = [item for item in items if (accept(item) if accept else
+                    any(key in str(item.get('name','')) for key in ('二创','精剪原片')))]
         for item in matching:
             collected.setdefault(str(item['id']), item)
         if on_page:
@@ -75,13 +75,19 @@ class RecreationBatch:
         self.state = state
 
     @classmethod
-    def create(cls, root, dramas, *, exclude_name=''):
-        exclude_name=normalize_exclude_name(exclude_name)
+    def create(cls, root, dramas, *, exclude_name='', include_name=None):
+        if include_name is not None:
+            include_name=', '.join(normalize_name_terms(include_name))
+            exclude_name=', '.join(normalize_name_terms(exclude_name))
+        else:
+            exclude_name=normalize_exclude_name(exclude_name)
         run_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
         folder = Path(root) / '素材再创作' / run_id
         folder.mkdir(parents=True, exist_ok=False)
         batch = cls(folder, {'schema': 1, 'dramas': dramas, 'sources': [], 'outputs': [],
                              'collection_status': 'not_started','exclude_name':exclude_name})
+        if include_name is not None:
+            batch.state['include_name']=include_name
         batch.save()
         return batch
 
@@ -108,7 +114,7 @@ class RecreationBatch:
                 or any(not isinstance(p, str) for p in x['files']) for x in uploads):
             raise ValueError('批次上传记录不完整')
         batch = cls(folder, state)
-        normalize_exclude_name(state.get('exclude_name',''))
+        NameFilter.for_batch(state)
         interrupted = False
         if recover_interrupted and state.get('collection_status') == 'in_progress':
             state['collection_status'] = 'paused'

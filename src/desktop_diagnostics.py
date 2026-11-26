@@ -31,6 +31,14 @@ def smoke(output):
             app.processEvents()
             window.grab().save(str(folder/'file-cleanup.png'))
             result['cleanup_page'] = True
+            if ([window.settings.md5_lanes.itemData(i) for i in range(window.settings.md5_lanes.count())] != [1, 2]
+                    or not window.settings.md5_overlap.isEnabled()):
+                raise ValueError('Processing concurrency settings are missing')
+            window.notices.add(2, '改 MD5 本轮结束', '诊断：已入库 1 个')
+            window.notices.open(window.notices.feed.items[0])
+            if window.navigation.currentRow() != 4 or window.recreation.tabs.currentIndex() != 2:
+                raise ValueError('Task notice did not open the MD5 page')
+            result['speed_settings_and_notice_navigation'] = True
             # Load a local page in the real embedded browser. No external site or login.
             from PySide6.QtWebEngineWidgets import QWebEngineView
             browser = QWebEngineView(window)
@@ -60,6 +68,9 @@ def smoke(output):
                         options,should_stop=stop.is_set)
                     if report['failed'] or report['stopped'] or len(report['outputs'])!=1:raise ValueError(str(report))
                     reports[mode]=report
+                from src.md5_parallel import limited_work
+                if sorted(limited_work((1, 2), lambda item: item, lambda: 2, stop.is_set)) != [1, 2]:
+                    raise ValueError('Packaged two-lane work scheduler failed')
                 reports['cleanup'] = cleanup_smoke(source, reports['micro']['outputs'][0]['path'], folder)
                 return reports
             task=Background(processing,window)

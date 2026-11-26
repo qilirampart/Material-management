@@ -318,6 +318,11 @@ class ScheduleController(QObject):
             task['status'] = result['message']
             self.store.save(task)
             self.refresh()
+            if result['done'] and (result.get('selected') or result.get('retry_ids')):
+                self.owner.task_notice(1,'定时任务结束',task['status'],attention=bool(result.get('retry_ids')))
+            elif not result['done'] and not self.stop_event.is_set():
+                self.owner.task_notice(1,'定时任务待处理',task['status'],
+                                       key=f'schedule:{task["drama"]}:{window[1]}:{task["status"]}',attention=True)
         except (OSError, ValueError) as exc:
             self.refresh('定时结果未保存，已暂停：'+str(exc))
             self.timer.stop()

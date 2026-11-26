@@ -38,3 +38,23 @@ class NameFilterUiTests(unittest.TestCase):
             with patch('src.recreation.RecreationBatch.save',side_effect=OSError('read only')):
                 self.assertFalse(page.apply_name_exclusion())
             self.assertEqual(page.exclude_name.text(),'');self.assertEqual(page.batch.state.get('exclude_name',''),'')
+
+    def test_manual_filters_save_per_batch_and_only_matching_rows_are_selected(self):
+        with tempfile.TemporaryDirectory() as root:
+            page=self.page(root);page.drama_input.setPlainText('4100-测试剧');page.create_batch()
+            drama=page.batch.state['dramas'][0]
+            page.batch.record_page(drama,[{'id':'1','name':'高光'},
+                {'id':'2','name':'口播-旧版'},{'id':'3','name':'二创'},{'id':'4','name':'口播'}],1)
+            page.include_name.setText('高光，口播')
+            page.exclude_name.setText('旧版；小方块')
+            self.assertTrue(page.apply_name_exclusion())
+            page.set_checked(page.source_table,'all')
+            self.assertEqual(page.checked_rows(page.source_table),[0,3])
+            self.assertIn('未命中',page.source_table.item(2,3).text())
+            page.batch=RecreationBatch.load(page.batch.folder)
+            page.load_batch_view()
+            self.assertEqual(page.include_name.text(),'高光, 口播')
+            self.assertEqual(page.exclude_name.text(),'旧版, 小方块')
+            with patch.object(page,'_start_browser_task') as start:
+                page.start_downloads(False)
+            start.assert_called_once_with('download',identities=['4100_1','4100_4'])

@@ -6,6 +6,28 @@ from src.recreation_platform import collect_platform_materials,download_platform
 
 
 class MaterialNameFilterTests(unittest.TestCase):
+    def test_custom_include_union_deduplicates_and_exclusion_wins(self):
+        class Client:
+            calls=[]
+            def lookup(self,drama):return drama
+            def fetch_page(self,drama,keyword,page,start,end,**kwargs):
+                self.calls.append((keyword,kwargs))
+                items=[{'id':'1','name':'高光-口播'}, {'id':'2','name':'高光-旧版'}, {'id':'3','name':'无关'},
+                       {'id':'4','name':'口播-小方块'}]
+                return {'items':items,'total':len(items),'has_next':False}
+        with tempfile.TemporaryDirectory() as folder:
+            batch=RecreationBatch.create(folder,[{'id':'4100','name':'测试剧'}],
+                                         include_name='高光，口播',exclude_name='旧版；小方块')
+            client=Client()
+            collect_platform_materials(batch,client,'2014-01-01','2026-11-15')
+            self.assertEqual(client.calls,[('高光',{}),('口播',{})])
+            self.assertEqual([x['source_material_id'] for x in batch.state['sources']],['1'])
+            client.calls.clear()
+            batch.state.update(include_name='',exclude_name='')
+            collect_platform_materials(batch,client,'2014-01-01','2026-11-15')
+            self.assertEqual(client.calls,[('',{})])
+            self.assertEqual(len(batch.state['sources']),4)
+
     def test_query_sends_observed_exclusion_and_locally_rejects_square_name_but_keeps_landscape(self):
         class Client:
             def __init__(self):self.filters=[]

@@ -62,16 +62,17 @@ class RecreationWorkspace:
         self.last_batch = folder
         self.save()
 
-    def create(self, text, *, exclude_name=''):
+    def create(self, text, *, exclude_name='', include_name=None):
         result = []
         for drama in parse_dramas(text):
-            batch = RecreationBatch.create(self.root, [drama],exclude_name=exclude_name)
+            batch = RecreationBatch.create(self.root, [drama],exclude_name=exclude_name,include_name=include_name)
             self.register(batch)
             result.append(batch)
         return result
 
-    def import_files(self, paths, *, exclude_name=''):
+    def import_files(self, paths, *, exclude_name='', include_name=None):
         result = []
+        filters={'exclude_name':exclude_name,'include_name':include_name}
         for filename in paths:
             path = Path(filename)
             if path.suffix.lower() == '.json':
@@ -81,7 +82,7 @@ class RecreationWorkspace:
                 continue
             info = parse_upload_drama_filename(path)
             if info:
-                result.extend(self.create(info['drama_platform_id'] + '-' + info['drama_name'],exclude_name=exclude_name))
+                result.extend(self.create(info['drama_platform_id'] + '-' + info['drama_name'],**filters))
                 continue
             if path.suffix.lower() == '.xlsx':
                 from openpyxl import load_workbook
@@ -114,7 +115,7 @@ class RecreationWorkspace:
                 identity = str(int(value)) if isinstance(value, (int, float)) and int(value) == value else str(value).strip()
                 name = str(row[name_col] or '').strip() if name_col is not None and name_col < len(row) else ''
                 lines.append(identity + ('-' + name if name else ''))
-            result.extend(self.create('\n'.join(lines),exclude_name=exclude_name))
+            result.extend(self.create('\n'.join(lines),**filters))
         return result
 
     def enqueue(self, folder, identities):

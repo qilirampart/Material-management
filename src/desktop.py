@@ -242,8 +242,12 @@ class MainWindow(QMainWindow):
         from src.recreation_workflow import RecreationWorkflowPage
         self.recreation = RecreationWorkflowPage(self.config, restore=restore)
         self.recreation.external_work_in_progress = self.legacy_work_in_progress
+        self.recreation.only_legacy_download = self.only_legacy_download
         self.recreation.task_finished.connect(lambda: QTimer.singleShot(0, self.close) if self.close_after else None)
         self.add_page(self.recreation)
+        from src.task_notices import TaskNotices
+        self.notices = TaskNotices(self,rail_layout)
+        self.recreation.task_notice = self.notices.add
         self.navigation.currentRowChanged.connect(self.change_page)
         self.navigation.setCurrentRow(0)
         self.statusBar().showMessage("就绪 · 请选择工作流程")
@@ -709,6 +713,12 @@ class MainWindow(QMainWindow):
         tasks.extend(self.platform.active_background_tasks())
         return self.is_running() or any(task is not None and task.isRunning() for task in tasks)
 
+    def only_legacy_download(self):
+        tasks = [self.io_task,self.quality_task,self.bitrate_task,*self.platform.active_background_tasks()]
+        return (self.is_running() and self.recreation.legacy_download_active.is_set()
+                and getattr(self, 'legacy_download_lanes', 1) == 1
+                and not any(task is not None and task.isRunning() for task in tasks))
+
     def set_busy(self, busy):
         for control in [
             self.import_button, self.open_button, self.retry_button, self.recheck_button,
@@ -1141,7 +1151,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("请先选中需要重新检测的素材")
 
     def start_batch(self, selected=None, force=False):
-        if self.is_running() or self.has_active_background_tasks():
+        operation = 'detect' if force else self.mode.currentData()
+        overlap = (operation=='download' and self.config.get('md5_overlap') and self.recreation.only_md5_active()
+                   and not self.legacy_work_in_progress()
+                   and all(task is self.recreation.md5.task for task in self.active_background_tasks()))
+        if self.is_running() or (self.has_active_background_tasks() and not overlap):
             self.statusBar().showMessage('后台任务仍在运行，完成后才能开始处理')
             return
         if not self.folder or not self.input_path:
@@ -1155,7 +1169,14 @@ class MainWindow(QMainWindow):
         if not selected:
             self.statusBar().showMessage("当前批次没有待处理素材；可选中素材后点击重新检测")
             return
-        operation = 'detect' if force else self.mode.currentData()
+        if overlap:
+            from src.md5_parallel import resource_issue
+            budget = dict(self.recreation.md5.active_budget)
+            budget.setdefault(self.folder, 0)
+            issue = resource_issue(budget, 1, downloading=True)
+            if issue:
+                QMessageBox.warning(self, '无法同时运行', '暂不能在改 MD5 时启动下载：'+issue+'。请等待加工结束。')
+                return
         self.batch_task_ids = list(dict.fromkeys(selected))
         download_only = operation == 'download'
         if not download_only:
@@ -1178,7 +1199,7 @@ class MainWindow(QMainWindow):
         self.last_worker_error = ""
         self.last_worker_event = {}
         task_config = dict(self.config)
-        task_config["download_concurrency"] = int(self.download_concurrency.currentData() or 1)
+        task_config["download_concurrency"] = (1 if overlap else int(self.download_concurrency.currentData() or 1))
         task_config["minimum_video_short_edge"] = int(self.minimum_resolution.currentData() or 0)
         save_json(self.request_path, {"input_path": str(self.input_path), "output": str(self.folder), "config": task_config,
                                      "resume": True, "operation": operation, "selected_ids": list(dict.fromkeys(selected)),
@@ -1192,6 +1213,10 @@ class MainWindow(QMainWindow):
         else:
             program, args = sys.executable, ["-m", "src.worker", str(self.request_path)]
         self.set_busy(True)
+        if download_only:
+            self.legacy_download_lanes = task_config["download_concurrency"]
+            self.recreation.legacy_download_generation += 1
+            self.recreation.legacy_download_active.set()
         self.work_status.setText(f"等待处理 0 / 共 {len(self.batch_task_ids)} · 下载并发 {task_config['download_concurrency']}")
         self.process.start(program, args)
         self.event_timer.start()
@@ -1257,8 +1282,10 @@ class MainWindow(QMainWindow):
     def worker_error(self, error):
         self.last_worker_error = self.process.errorString()
         if error == QProcess.FailedToStart:
+            self.recreation.legacy_download_active.clear()
             self.event_timer.stop()
             self.set_busy(False)
+            self.notices.add(-1,'素材任务未启动',self.last_worker_error,attention=True)
             if self.batch_lock:
                 self.batch_lock.unlock()
             self.close_after = False
@@ -1315,9 +1342,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self.current_id + ' · ' + brief + ' · ' + amount + ' · ' + speed)
 
     def worker_finished(self, code, status):
+        self.recreation.legacy_download_active.clear()
         self.poll_events()
         self.event_timer.stop()
         self.current_id = ""
+        completed_ids, total = self.batch_task_ids, len(self.batch_task_ids)
         self.batch_task_ids = []
         self.work_status.setText("就绪 · 下载并发 " + str(self.download_concurrency.currentData() or 1))
         self.download_bar.setRange(0, 1000)
@@ -1329,11 +1358,22 @@ class MainWindow(QMainWindow):
         if self.batch_lock:
             self.batch_lock.unlock()
         if code or self.worker_outcome == "failed":
-            self.statusBar().showMessage(describe_worker_exit(
+            message=describe_worker_exit(
                 code, self.worker_outcome, self.last_worker_error, self.last_worker_event,
-            ))
+            )
+            self.statusBar().showMessage(message)
+            self.notices.add(-1,'素材任务待处理',message,attention=True)
         elif self.worker_outcome == "paused":
             self.statusBar().showMessage("任务已按暂停请求结束，已完成结果已保存。")
+        elif self.worker_outcome == 'completed' and total:
+            failed = sum(self.records.get(video_id, {}).get('status') == 'download_failed'
+                         for video_id in completed_ids)
+            if failed:
+                message = f'本轮 {total} 条，{failed} 条下载失败；可在素材任务页重试。'
+                self.statusBar().showMessage(message)
+                self.notices.add(-1, '素材下载待处理', message, attention=True)
+            else:
+                self.notices.add(-1,'素材任务本轮结束',f'本轮 {total} 条，结果已保存；可查看详情。')
         if self.close_after:
             self.close()
 
@@ -1349,6 +1389,8 @@ class MainWindow(QMainWindow):
             if self.recreation.own_work_in_progress():
                 self.close_after = True
                 self.recreation.request_stop_all()
+                if self.is_running():
+                    self.pause()
                 self.statusBar().showMessage('正在停止再创作任务，保存进度后退出；平台已开始的上传可在网页查看。')
             elif (
                 self.bitrate_task and self.bitrate_task.isRunning()

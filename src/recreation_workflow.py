@@ -16,7 +16,7 @@ from src.recreation_processing import ProcessingWorkbench
 from src.recreation_schedule_ui import ScheduleController
 from src.recreation import RecreationBatch
 from src.recovery_dialog import RecoveryDialog
-from src.material_name_filter import name_is_excluded
+from src.material_name_filter import NameFilter
 from src.recreation_platform import RecreationPlatformError
 from src.recreation_upload import upload_files, upload_script, record_upload, reconcile_upload, UploadNotStarted
 from src.recreation_submit import submit_uploaded_batch, close_submission_receipt, SubmitNotStarted
@@ -29,6 +29,10 @@ from src.edge_cdp import find_page_ws_url, evaluate_edge_page
 class RecreationWorkflowPage(RecreationPage):
     def __init__(self, config, *, restore=True):
         config = dict(config)
+        self.speed_config = config
+        self.task_notice = lambda *args,**kwargs: None
+        self.legacy_download_active = threading.Event()
+        self.legacy_download_generation = 0
         config['platform_url'] = config.get('platform_url') or 'https://market.wuread.cn/market-admin/'
         super().__init__(config, restore=False)
         self.setObjectName('recreationWorkflow')
@@ -45,6 +49,7 @@ class RecreationWorkflowPage(RecreationPage):
         self.queue_stopped = False
         self.job_failed = False
         self.queue_steps_left = 0
+        self.queue_completed = self.queue_failed = 0
         self.queue_pause_reason = ''
         self.queue_remaining_ids = None
         self.upload_task, self.upload_busy = None, False
@@ -60,6 +65,8 @@ class RecreationWorkflowPage(RecreationPage):
         self.upload_continue_timer.setSingleShot(True)
         self.upload_continue_timer.timeout.connect(self.resume_auto_upload)
         self.upload_total = 0
+        self.upload_run_submitted = 0
+        self.upload_round_id = ''
         collect, old_outputs = self.tabs.widget(0), self.tabs.widget(1)
         while self.tabs.count():
             self.tabs.removeTab(0)
@@ -291,11 +298,26 @@ class RecreationWorkflowPage(RecreationPage):
 
     def apply_config(self, config):
         # Only future batches use the new root. Existing jobs keep captured folders.
+        self.speed_config = dict(config)
         self.output_root = Path(config['output_root'])
         self.workspace.root = self.output_root
         self.platform.config = dict(config)
         self.platform.address.setText(config.get('platform_url') or 'https://market.wuread.cn/market-admin/')
         self.file_cleanup.refresh()
+
+    def only_md5_active(self):
+        return (self.md5.busy and not self.micro.busy and not self.collection_busy and not self.queue_running
+                and not self.upload_busy and not getattr(self,'cleanup_busy',False)
+                and not self.schedule.working and not self.recovery_dialog
+                and all(task is self.md5.task for task in self.active_background_tasks()))
+
+    def md5_start_blocked(self):
+        if self.own_work_in_progress():
+            return True
+        if not self.work_in_progress():
+            return False
+        return not (self.speed_config.get('md5_overlap') and
+                    getattr(self,'only_legacy_download',lambda:False)())
 
     def restore_last_batch(self):
         folder = self.workspace.last_batch
@@ -387,7 +409,8 @@ class RecreationWorkflowPage(RecreationPage):
         try:
             self.workspace.path = self.preferences_path
             self.workspace.root = self.output_root
-            batches = self.workspace.create(self.drama_input.toPlainText(),exclude_name=self.exclude_name.text())
+            batches = self.workspace.create(self.drama_input.toPlainText(),include_name=self.include_name.text(),
+                                            exclude_name=self.exclude_name.text())
             self.batch = batches[0]
             self.load_batch_view()
             self.remember_batch()
@@ -424,7 +447,8 @@ class RecreationWorkflowPage(RecreationPage):
         try:
             self.workspace.path = self.preferences_path
             self.workspace.root = self.output_root
-            batches = self.workspace.import_files(paths,exclude_name=self.exclude_name.text())
+            batches = self.workspace.import_files(paths,include_name=self.include_name.text(),
+                                                 exclude_name=self.exclude_name.text())
             if batches:
                 self.batch = batches[0]
                 self.load_batch_view()
@@ -457,8 +481,9 @@ class RecreationWorkflowPage(RecreationPage):
                 except (FileNotFoundError, ValueError):
                     skipped += 1
                     continue
+                filters=NameFilter.for_batch(batch.state)
                 ids = [x['video_id'] for x in batch.state['sources'] if x.get('source_material_id')
-                    and not name_is_excluded(x['name'],batch.state.get('exclude_name',''))
+                    and not filters.reason(x['name'])
                     and not (x['download_status'] == 'downloaded' and x.get('path') and Path(x['path']).is_file())]
                 if not ids:
                     skipped += 1
@@ -478,6 +503,7 @@ class RecreationWorkflowPage(RecreationPage):
             return
         self.queue_running, self.queue_stopped = True, False
         self.queue_skipped = skipped
+        self.queue_completed = self.queue_failed = 0
         self.queue_steps_left = len(self.workspace.queue)
         self.queue_pause_reason = ''
         self.start_next_download()
@@ -618,6 +644,9 @@ class RecreationWorkflowPage(RecreationPage):
                 self.collection_bar.setFormat('有待重试项')
             elif not self.workspace.queue:
                 self.collection_status.setText('下载队列已完成' if not self.queue_skipped else '队列已处理，已跳过不可用批次')
+            if not self.queue_stopped:
+                detail = f'完成 {self.queue_completed} 条 · 失败 {self.queue_failed} 条。{self.collection_status.text()}'
+                self.task_notice(1, '智投下载队列结束', detail, attention=bool(self.workspace.queue))
             self.refresh_batch_list()
             self.task_finished.emit()
             return
@@ -653,8 +682,14 @@ class RecreationWorkflowPage(RecreationPage):
         self.collection_bar.setRange(0, 1)
         self.collection_bar.setValue(0)
         self.collection_bar.setFormat('下载队列已暂停')
+        if not self.queue_stopped:
+            self.notify_download_pause(reason)
         self.refresh_batch_list()
         self.task_finished.emit()
+
+    def notify_download_pause(self, reason):
+        folder = self.workspace.queue[0]['folder'] if self.workspace.queue else ''
+        self.task_notice(1, '智投下载待处理', reason, key=f'queue:{folder}:{reason}', attention=True)
 
     def stop_collection(self):
         self.queue_stopped = True
@@ -665,6 +700,9 @@ class RecreationWorkflowPage(RecreationPage):
         super().collection_failed(message)
         if self.queue_running and not self.queue_stopped:
             self.queue_pause_reason = self.message.text()
+        elif not self.collection_stop.is_set():
+            self.task_notice(1,'智投素材任务待处理',message,
+                             key=f'collection:{getattr(self.batch,"folder","")}:{message}',attention=True)
 
     def collection_result(self, result):
         if super().collection_result(result) is False:
@@ -674,8 +712,17 @@ class RecreationWorkflowPage(RecreationPage):
             return
         self.job_failed = bool(result.get('stopped'))
         if self.queue_running:
+            self.queue_completed += result.get('completed', 0)
+            self.queue_failed += result.get('failed', 0)
             self.queue_remaining_ids = result.get('remaining_ids')
             self.queue_pause_reason = result.get('pause_reason', '')
+        elif 'completed' in result and not self.pending_import:
+            reason=result.get('pause_reason','')
+            if reason:
+                self.task_notice(1,'智投下载待处理',self.message.text(),
+                                 key=f'download:{result.get("folder","")}:{reason}',attention=True)
+            elif not result.get('stopped'):
+                self.task_notice(1,'智投下载结束',self.message.text(),attention=bool(result.get('failed')))
         if self.pending_import and not result.get('stopped'):
             mode, folder, identities = self.pending_import
             self.complete_processing_import(mode, folder, identities)
@@ -705,6 +752,8 @@ class RecreationWorkflowPage(RecreationPage):
             self.message.setText(pause)
             self.collection_bar.setValue(0)
             self.collection_bar.setFormat('下载队列已暂停')
+            if not self.queue_stopped:
+                self.notify_download_pause(pause)
         elif was_queued:
             QTimer.singleShot(0, self.start_next_download)
             self.refresh_batch_list()
@@ -1163,6 +1212,8 @@ class RecreationWorkflowPage(RecreationPage):
         for group,start in zip(queue,starts):
             group['sequence_start']=start
         self.upload_groups=queue
+        self.upload_round_id=uuid4().hex
+        self.upload_run_submitted=0
         self.upload_total = len(self.upload_groups)
         self.upload_status.setText('请核对本批名单后点击“上传并提交本轮”' if auto else
                                    '队列已建立，请核对本批名单后点击“上传本批”')
@@ -1383,21 +1434,27 @@ class RecreationWorkflowPage(RecreationPage):
                 self.message.setText(result['message'])
             elif result.get('submitted'):
                 self.upload_groups.pop(0)
+                self.upload_run_submitted+=result['uploaded']
                 self.message.setText(f"第 {group.get('number',1)} 批已提交审核 · {result['uploaded']} 条")
                 if not result.get('form_closed'):
                     self.message.setText(self.message.text()+'；请关闭智投回执后再继续')
+                    self.task_notice(4,'需关闭智投回执',self.message.text(),attention=True)
                 elif self.upload_groups and not self.upload_stop_event.is_set():
                     self.auto_continue_group = self.upload_groups[0]
                 elif self.upload_groups:
                     self.message.setText(self.message.text()+'；后续批次已暂停')
+                else:
+                    self.task_notice(4,'自动提交审核本轮结束',f'本轮已提交审核 {self.upload_run_submitted} 条')
             else:
                 record_upload(group, attempt, 'uploaded', result['uploaded'])
                 self.upload_groups.pop(0)
                 self.message.setText(f"第 {group.get('number', 1)} 批上传 {result['uploaded']} 条成功，未提交。"+
                                      result.get('submit_note','请到智投人工处理当前表单。'))
+                self.task_notice(4,'文件已传，待提交',self.message.text(),attention=True)
         except (OSError, ValueError):
             self.upload_needs_review = True
             self.message.setText('上传结果未能保存，队列已暂停；请先在智投核对当前表单。')
+            self.task_notice(4,'上传结果待核对',self.message.text(),attention=True)
         self.refresh_outputs()
         if not self.upload_groups:
             self.submit_mode.setCurrentIndex(0)
@@ -1419,6 +1476,8 @@ class RecreationWorkflowPage(RecreationPage):
         self.refresh_upload_queue()
         self.message.setText(message)
         self.upload_status.setText(message)
+        if not self.upload_stop_event.is_set() or self.upload_needs_review:
+            self.task_notice(4,'上传或提交待处理',message,key=f'upload:{self.upload_round_id}:{message}',attention=True)
         self.task_finished.emit()
 
     def request_stop_all(self):

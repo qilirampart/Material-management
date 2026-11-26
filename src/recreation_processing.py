@@ -7,7 +7,7 @@ from dataclasses import asdict
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QLineEdit,
     QSpinBox, QScrollArea,QComboBox, QDialog, QPlainTextEdit, QDialogButtonBox,
-    QProgressBar, QTableWidgetItem)
+    QProgressBar, QTableWidgetItem, QMessageBox)
 from src.ui_design import card, label, btn, Background
 from src.desktop_widgets import local_open
 from src.variant_dialog import VariantDialog
@@ -16,6 +16,7 @@ from src.micro_preview import MicroPreviewDialog
 from src.media import FFmpegCancelled, FFmpegError
 from src.recreation import RecreationBatch
 from src.micro_settings import MicroSettings
+from src.md5_parallel import choose_lanes, limited_work, per_input_budget, resource_issue
 
 
 class ProcessingWorkbench(QWidget):
@@ -234,8 +235,15 @@ class ProcessingWorkbench(QWidget):
         dialog.deleteLater()
 
     def start(self, checked=False, *, sample=False, preview=False, retry=False):
-        if self.owner.work_in_progress():
-            self.status.setText('请先完成当前任务')
+        blocked = self.owner.md5_start_blocked if self.mode=='md5' else self.owner.work_in_progress
+        if blocked():
+            message = '请先完成当前任务'
+            if self.mode == 'md5' and self.owner.legacy_download_active.is_set():
+                if self.owner.speed_config.get('md5_overlap'):
+                    message = '当前下载不能并行；请等本批结束，或下批用单路纯下载'
+                else:
+                    message = '请先完成下载；如需同时运行，可在设置中开启'
+            self.status.setText(message)
             return
         retry_versions = defaultdict(lambda: defaultdict(list))
         if retry:
@@ -256,6 +264,44 @@ class ProcessingWorkbench(QWidget):
         except ValueError as exc:
             self.status.setText(str(exc))
             return
+        lanes, approved_download, budget = 1, None, {}
+        download = self.owner.legacy_download_active
+        if self.mode=='md5':
+            budget=per_input_budget(items,options)
+            same_batch = len({item['batch_folder'] for item in items}) < len(items)
+            requested=2 if self.owner.speed_config.get('md5_lanes')==2 and same_batch and not sample else 1
+            current_generation = self.owner.legacy_download_generation
+            issue=resource_issue(budget,requested,downloading=download.is_set()) if requested==2 or download.is_set() else ''
+            if requested==1 and issue:
+                QMessageBox.warning(self,'无法同时运行','暂不能在下载时改 MD5：'+issue+'。请等待下载结束。')
+                return
+            lanes, prompt=choose_lanes(requested,download.is_set(),not issue)
+            if prompt=='unsupported':
+                if resource_issue(budget,1,downloading=download.is_set()):
+                    QMessageBox.warning(self,'无法启动改 MD5',issue+'，请释放资源后再试。')
+                    return
+                answer=QMessageBox.question(self,'无法开启双路',issue+'。本轮改用 1 路开始？',
+                                           QMessageBox.Yes|QMessageBox.No,QMessageBox.Yes)
+                if answer!=QMessageBox.Yes:
+                    return
+            elif prompt=='download':
+                dialog=QMessageBox(QMessageBox.Question,'正在下载',
+                                    '双路改 MD5 可能让整批更慢，建议本轮用 1 路。',parent=self)
+                safe=dialog.addButton('本轮用 1 路',QMessageBox.AcceptRole)
+                faster=dialog.addButton('本轮仍用 2 路',QMessageBox.ActionRole)
+                dialog.addButton('取消',QMessageBox.RejectRole)
+                dialog.setDefaultButton(safe)
+                dialog.exec()
+                if dialog.clickedButton() not in (safe,faster):
+                    return
+                if dialog.clickedButton() is faster:
+                    approved_download, lanes = current_generation, 2
+                else:
+                    lanes = 1
+            if blocked():
+                self.status.setText('其他任务已开始，请完成后再试')
+                return
+            self.active_budget=budget
         if sample or preview:
             items = items[:1]
         frozen_plans={}
@@ -319,16 +365,22 @@ class ProcessingWorkbench(QWidget):
                     failed.extend(folder_failures('读取批次', '来源批次记录不可用，已跳过此批次', retryable=True))
                     continue
                 try:
-                    result = generate_variants(sources, Path(folder) / '加工成品', options,
-                        progress=task.progress.emit, should_stop=self.stop_event.is_set, resolved_plans=frozen_plans,
-                        **({'versions_by_id': versions} if retry else {}))
+                    destination=Path(folder)/'加工成品'
+                    kwargs={'versions_by_id':versions} if retry else {}
+                    if lanes==2:
+                        result=self.parallel_folder(sources,destination,options,kwargs,frozen_plans,download,
+                                                    approved_download,budget,task.progress.emit)
+                    else:
+                        result = generate_variants(sources,destination,options,
+                            progress=task.progress.emit,should_stop=self.stop_event.is_set,
+                            resolved_plans=frozen_plans,**kwargs)
                 except OSError:
                     failed.extend(folder_failures('写入加工目录', '无法写入文件或加工记录；请先检查权限及可能已生成的成品',
                         retryable=False, manifest=str(Path(folder) / '加工成品')))
                     continue
                 failed.extend({**entry, 'batch_folder': folder, 'name': by_id[entry['video_id']]['name'],
                                'retryable': entry.get('retryable', True),
-                               'stage': entry.get('stage', '处理视频'), 'manifest': result.get('manifest', '')}
+                               'stage': entry.get('stage', '处理视频'), 'manifest': entry.get('manifest', result.get('manifest',''))}
                               for entry in result['failed'])
                 try:
                     if result['outputs']:
@@ -338,7 +390,8 @@ class ProcessingWorkbench(QWidget):
                     failed.extend({'batch_folder': folder, 'video_id': x['source_video_id'],
                                    'name': by_id[x['source_video_id']]['name'], 'version': x['version'],
                                    'stage': '保存批次', 'error': '成品已保留；请在上传页使用“找回加工成品”恢复记录',
-                                   'retryable': False, 'manifest': result.get('manifest', '')} for x in result['outputs'])
+                                   'retryable': False, 'manifest':result.get('output_manifests',{}).get(x['path'],result.get('manifest',''))}
+                                  for x in result['outputs'])
                     if result['stopped']:
                         stopped, stop_reason = True, result.get('stop_reason', '')
                         break
@@ -369,14 +422,63 @@ class ProcessingWorkbench(QWidget):
         self.bar.setRange(0, 0)
         task.start()
 
+    def parallel_folder(self, sources, destination, options, kwargs, frozen, download, consent, budget, progress):
+        stop_new=threading.Event()
+        result={'outputs':[],'failed':[],'stopped':False,'stop_reason':'','output_manifests':{}}
+        last_slots=None
+
+        def slots():
+            nonlocal last_slots
+            downloading=download.is_set()
+            new_download = downloading and self.owner.legacy_download_generation != consent
+            count=1 if new_download or resource_issue(budget,downloading=downloading) else 2
+            if count!=last_slots:
+                progress({'phase':'lanes','lanes':count,'downloading':downloading})
+                last_slots=count
+            return count
+
+        def one(source):
+            try:
+                item=generate_variants([source],destination,options,should_stop=self.stop_event.is_set,
+                                       resolved_plans=frozen,**kwargs)
+            except OSError:
+                versions=kwargs.get('versions_by_id',{}).get(source['video_id'],range(1,options.variants+1))
+                item={'outputs':[],'stopped':False,'failed':[
+                    {'video_id':source['video_id'],'version':v,'stage':'写入加工目录',
+                     'error':'无法写入成品或清单，请先核对输出目录','retryable':False} for v in versions]}
+            if item['stopped']:
+                stop_new.set()
+            return item
+
+        for index,item in enumerate(limited_work(sources,one,slots,
+                                  lambda:stop_new.is_set() or self.stop_event.is_set()),1):
+            result['outputs'].extend(item['outputs'])
+            result['failed'].extend({**entry,'manifest':item.get('manifest','')} for entry in item['failed'])
+            result['output_manifests'].update({entry['path']:item.get('manifest','') for entry in item['outputs']})
+            if item['stopped']:
+                result['stopped']=True
+                result['stop_reason']=item.get('stop_reason') or result['stop_reason']
+            progress({'phase':'parallel_item','index':index,'total':len(sources),'lanes':last_slots})
+        return result
+
     def processing_interrupted(self, message):
         # An unexpected interruption gives no trustworthy per-file result. Avoid
         # retrying previously failed entries that this attempt may have completed.
         self.failures = [{**entry, 'retryable': False} for entry in self.failures]
         self.last_stop_reason = message + ' 请先检查已生成的成品及加工记录，再决定是否重跑。'
         self.status.setText('本轮中断，结果需核对；请查看失败明细。')
+        self.owner.task_notice(2 if self.mode=='md5' else 3,'加工结果待核对',self.last_stop_reason,attention=True)
 
     def show_progress(self, event):
+        if event['phase']=='lanes':
+            self.status.setText(f"改 MD5 · {event['lanes']} 路" +
+                (' · 下载进行中，暂停补充第二路' if event['lanes']==1 and event['downloading'] else ''))
+            return
+        if event['phase']=='parallel_item':
+            self.bar.setRange(0,event['total'])
+            self.bar.setValue(event['index'])
+            self.status.setText(f"已处理 {event['index']} / {event['total']} 条 · {event['lanes']} 路")
+            return
         if event['phase'] == 'budget_scan':
             self.status.setText(f"检查磁盘预算 · 读取视频信息 {event['index']} / {event['total']}")
             return
@@ -411,6 +513,10 @@ class ProcessingWorkbench(QWidget):
         self.last_stop_reason = (result.get('stop_reason') or '已停止') if result['stopped'] else ''
         self.status.setText(f"已入库 {len(result['outputs'])} 个 · 待处理失败 {len(self.failures)} 个"
                             + (' · ' + self.last_stop_reason if self.last_stop_reason else ''))
+        if not self.stop_event.is_set():
+            self.owner.task_notice(2 if self.mode=='md5' else 3,
+                ('改 MD5' if self.mode=='md5' else '微创新')+('待处理' if result['stopped'] else '本轮结束'),
+                self.status.text(),attention=bool(self.failures or result['stopped']))
         if result['outputs']:
             self.last_output = result['outputs'][-1]['path']
             self.preview_button.setEnabled(True)
@@ -421,6 +527,7 @@ class ProcessingWorkbench(QWidget):
 
     def finish(self):
         self.busy = False
+        self.active_budget={}
         for control in (self.table, self.options_widget, self.start_button, self.sample_button,
                         self.effect_button, self.import_button, self.remove_button):
             control.setEnabled(True)

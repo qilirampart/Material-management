@@ -242,6 +242,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertFalse(page.submit_mode.isEnabled())
                 self.assertEqual([len(g['outputs']) for g in page.upload_groups],[50,1])
                 page.platform.browser=Mock()
+                page.task_notice=Mock()
                 page.platform.browser.page.return_value.devToolsId.return_value='target'
                 attempts=[]
                 transfers=[]
@@ -287,6 +288,8 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(len(attempts),2 if first_result=='confirmed' else 1)
                 self.assertEqual(transfers,attempts)
                 if first_result=='confirmed':
+                    self.assertEqual(page.task_notice.call_count,1)
+                    self.assertIn('51 条',page.task_notice.call_args.args[2])
                     self.assertEqual([x['uploaded'] for x in entries()],[50,1])
                     self.assertTrue(all(x['submitted'] for x in entries()))
                     self.assertEqual(page.submit_mode.currentData(),'manual')

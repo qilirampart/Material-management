@@ -199,7 +199,17 @@ class SettingsPage(QWidget):
         self.website.setPlaceholderText('公司平台地址（待对齐）')
         form.addRow('平台地址', self.website)
         box.addLayout(form)
-        box.addWidget(label('任务在独立进程中排队执行；当前并发上限为 1。'))
+        self.md5_lanes = QComboBox()
+        self.md5_lanes.addItem('1 路（稳定）',1)
+        self.md5_lanes.addItem('2 路（启动时检查）',2)
+        self.md5_lanes.setCurrentIndex(int(config.get('md5_lanes')==2))
+        form.addRow('改 MD5 并发',self.md5_lanes)
+        self.md5_overlap = QCheckBox('允许抖音纯下载与改 MD5 同时运行')
+        self.md5_overlap.setChecked(bool(config.get('md5_overlap',False)))
+        box.addWidget(self.md5_overlap)
+        self.desktop_notices = QCheckBox('离开任务页时显示任务提醒')
+        self.desktop_notices.setChecked(config.get('desktop_notices',True))
+        box.addWidget(self.desktop_notices)
         self.restore = QCheckBox('启动时恢复上次批次（不自动执行）')
         self.restore.setChecked(config.get('restore_batch', True))
         box.addWidget(self.restore)
@@ -213,7 +223,7 @@ class SettingsPage(QWidget):
             ('model', '图片检测模型', '管理模型、API 地址与密钥，测试图片识别', model),
             ('updates', '软件更新', '检查版本与设置更新偏好 · 更新源待接入', updates),
             ('rules', '检测规则', '禁用文字、红果 logo 与片头抽帧规则', rules),
-            ('storage', '任务与存储', '素材目录、下载参数、平台地址与历史恢复', storage),
+            ('storage', '任务与存储', '素材目录、下载参数、并发与任务提醒', storage),
         ]
         for index, (key, text, hint, content) in enumerate(sections):
             entry = btn(text + '\n\n' + hint + '\n\n打开设置  →',
@@ -223,7 +233,7 @@ class SettingsPage(QWidget):
             grid.addWidget(entry, index // 2, index % 2)
             dialog = QDialog(self)
             dialog.setWindowTitle(text)
-            dialog.resize(660, 560 if key == 'storage' else 510)
+            dialog.resize(660, 590 if key == 'storage' else 510)
             dialog.setMinimumSize(500, 360)
             layout = QVBoxLayout(dialog)
             scroll = QScrollArea()
@@ -257,10 +267,11 @@ class SettingsPage(QWidget):
         self.capture()
         snapshot = (copy.deepcopy(self.entries), self.profiles.currentData(),
                     {k: e.text() for k, e in self.fields.items()}, self.phrases.toPlainText(),
-                    self.website.text(), self.restore.isChecked(), self.auto_update.isChecked())
+                    self.website.text(), self.restore.isChecked(), self.auto_update.isChecked(),
+                    self.md5_lanes.currentIndex(),self.md5_overlap.isChecked(),self.desktop_notices.isChecked())
         self.dialog_messages[key].setText('修改后点击保存，取消不会保存本次修改。')
         if self.dialogs[key].exec() != QDialog.Accepted:
-            entries, wanted, fields, phrases, website, restore, updates = snapshot
+            entries, wanted, fields, phrases, website, restore, updates, lanes, overlap, notices = snapshot
             self.entries = entries
             self.rebuild_profiles(wanted)
             for k, text in fields.items():
@@ -269,6 +280,9 @@ class SettingsPage(QWidget):
             self.website.setText(website)
             self.restore.setChecked(restore)
             self.auto_update.setChecked(updates)
+            self.md5_lanes.setCurrentIndex(lanes)
+            self.md5_overlap.setChecked(overlap)
+            self.desktop_notices.setChecked(notices)
 
     def save_dialog(self, dialog):
         if self.save():
@@ -492,7 +506,9 @@ class SettingsPage(QWidget):
             self.set_message('模型配置保存失败，请检查目录权限。')
             return
         config.update(model_config_path=str(path), model_profile_id=self.profiles.currentData() or '',
-                      restore_batch=self.restore.isChecked(), auto_check_update=self.auto_update.isChecked())
+                      restore_batch=self.restore.isChecked(), auto_check_update=self.auto_update.isChecked(),
+                      md5_lanes=self.md5_lanes.currentData(), md5_overlap=self.md5_overlap.isChecked(),
+                      desktop_notices=self.desktop_notices.isChecked())
         self.config = config
         self.saved.emit(config)
         self.set_message('设置已保存。')

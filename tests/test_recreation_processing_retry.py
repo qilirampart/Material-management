@@ -4,11 +4,12 @@ import time
 import unittest
 from pathlib import Path
 from shutil import copyfile
+from threading import Barrier
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QMessageBox
 from src.media import run
 from src.recreation import RecreationBatch
 from src.recreation_workflow import RecreationWorkflowPage
@@ -90,4 +91,78 @@ class ProcessingRetryTests(unittest.TestCase):
             self.assertEqual(len(list((batch.folder/'加工成品').rglob('*.mp4'))), 1)
             self.assertTrue(panel.failure_button.isEnabled())
             self.assertFalse(panel.retry_button.isEnabled())
+            page.close()
+
+    def test_dual_run_processes_two_sources_concurrently_and_persists_both(self):
+        from src.recreation_processing import generate_variants
+        with tempfile.TemporaryDirectory() as folder:
+            page, batch, good, bad = self.fixture(self.aliased_root(folder))
+            panel = page.md5
+            page.speed_config['md5_lanes'] = 2
+            for row, item in enumerate(panel.items):
+                if Path(item['path']).resolve() == bad.resolve():
+                    panel.table.item(row, 0).setCheckState(Qt.Unchecked)
+            barrier = Barrier(2, timeout=5)
+
+            def generate(sources, *args, **kwargs):
+                self.assertEqual(len(sources), 1)
+                barrier.wait()
+                return generate_variants(sources, *args, **kwargs)
+
+            with patch('src.recreation_processing.resource_issue', return_value=''), \
+                 patch('src.recreation_processing.generate_variants', side_effect=generate) as calls, \
+                 patch('src.recreation_processing.QMessageBox') as warning, \
+                 patch.object(page, 'task_notice') as notice:
+                panel.start()
+                self.wait(panel)
+                warning.assert_not_called()
+                notice.assert_called_once()
+                self.assertEqual(calls.call_count, 2)
+            outputs = RecreationBatch.load(batch.folder).state['outputs']
+            self.assertEqual(len(outputs), 2)
+            self.assertTrue(all(Path(item['path']).is_file() for item in outputs))
+            self.assertFalse(panel.failures)
+            page.close()
+
+    def test_active_download_warning_offers_single_default_and_explicit_dual(self):
+        from src.recreation_processing import generate_variants
+        for use_dual in (False, True):
+            with self.subTest(use_dual=use_dual), tempfile.TemporaryDirectory() as folder:
+                page, batch, good, bad = self.fixture(self.aliased_root(folder))
+                copyfile(good, bad)
+                page.speed_config.update(md5_lanes=2, md5_overlap=True)
+                page.legacy_download_active.set()
+                panel = page.md5
+                choices = []
+
+                def choose():
+                    dialog = self.app.activeModalWidget()
+                    if not isinstance(dialog, QMessageBox):
+                        return
+                    default = dialog.defaultButton()
+                    choices.append(default.text())
+                    button = next((b for b in dialog.buttons() if '2 路' in b.text()), default)
+                    (button if use_dual else default).click()
+
+                with patch('src.recreation_processing.resource_issue', return_value=''), \
+                     patch('src.recreation_processing.generate_variants', wraps=generate_variants) as calls:
+                    QTimer.singleShot(0, choose)
+                    panel.start()
+                    self.wait(panel)
+                    self.assertEqual(calls.call_count, 3 if use_dual else 1)
+                self.assertEqual(choices, ['本轮用 1 路'])
+                self.assertEqual(len(RecreationBatch.load(batch.folder).state['outputs']), 3)
+                page.close()
+
+    def test_hard_resource_limit_refuses_dual_and_coexistence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page, _, _, _ = self.fixture(self.aliased_root(folder))
+            page.speed_config.update(md5_lanes=2, md5_overlap=True)
+            page.legacy_download_active.set()
+            with patch('src.recreation_processing.resource_issue', return_value='内存不足'), \
+                 patch('src.recreation_processing.QMessageBox.warning') as warning:
+                page.md5.start()
+                warning.assert_called_once()
+                self.assertIn('内存不足', warning.call_args.args[2])
+                self.assertFalse(page.md5.busy)
             page.close()
